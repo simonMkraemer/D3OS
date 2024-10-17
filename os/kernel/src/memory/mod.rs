@@ -2,6 +2,7 @@ pub mod alloc;
 pub mod physical;
 pub mod r#virtual;
 pub mod nvmem;
+pub mod nvram_allocator;
 
 #[derive(Clone, Copy)]
 pub enum MemorySpace {

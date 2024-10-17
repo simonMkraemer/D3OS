@@ -7,7 +7,7 @@
    ║ Author: Fabian Ruhland, HHU                                             ║
    ╚═════════════════════════════════════════════════════════════════════════╝
 */
-
+use alloc::boxed::Box;
 use crate::interrupt::interrupt_dispatcher;
 use crate::naming;
 use crate::syscall::syscall_dispatcher;
@@ -16,6 +16,7 @@ use alloc::format;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::alloc::{Allocator, Layout};
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::ops::Deref;
@@ -28,6 +29,7 @@ use smoltcp::iface::Interface;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpCidr, Ipv4Address};
 use smoltcp::wire::IpAddress::Ipv4;
+use uefi::allocator;
 use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
 use uefi::table::boot::PAGE_SIZE;
@@ -49,9 +51,12 @@ use crate::device::pit::Timer;
 use crate::device::ps2::Keyboard;
 use crate::device::qemu_cfg;
 use crate::device::serial::SerialPort;
-use crate::memory::{MemorySpace, nvmem};
+use crate::memory::{MemorySpace, nvmem, nvram_allocator};
 use crate::memory::nvmem::Nfit;
+use crate::memory::nvmem::ALLOCATOR;
+use crate::memory::nvram_allocator::{NvramAllocator, qemu_exit};
 use crate::network::rtl8139;
+
 
 // import labels from linker script 'link.ld'
 unsafe extern "C" {
@@ -86,7 +91,7 @@ pub extern "C" fn start(multiboot2_magic: u32, multiboot2_addr: *const BootInfor
     // Has to be done after EFI boot services have been exited, since they rely on their own GDT
     info!("Initializing GDT");
     init_gdt();
-    
+
     // The bootloader marks the kernel image region as available, so we need to reserve it manually
     unsafe { memory::physical::reserve(kernel_image_region()); }
 
@@ -119,7 +124,7 @@ pub extern "C" fn start(multiboot2_magic: u32, multiboot2_addr: *const BootInfor
     // Initialize terminal and enable terminal logging
     init_terminal(fb_info.address() as *mut u8, fb_info.pitch(), fb_info.width(), fb_info.height(), fb_info.bpp());
     logger().register(terminal());
- 
+
     // Dumping basic infos
     info!("Welcome to D3OS!");
     let version = format!("v{} ({} - O{})", built_info::PKG_VERSION, built_info::PROFILE, built_info::OPT_LEVEL);
@@ -222,6 +227,7 @@ pub extern "C" fn start(multiboot2_magic: u32, multiboot2_addr: *const BootInfor
     // Initialize non-volatile memory (creates identity mappings for any non-volatile memory regions)
     nvmem::init();
 
+
     // As a demo for NVRAM support, we read the last boot time from NVRAM and write the current boot time to it
     if let Ok(nfit) = acpi_tables().lock().find_table::<Nfit>() {
         if let Some(range) = nfit.get_phys_addr_ranges().first() {
@@ -233,16 +239,28 @@ pub extern "C" fn start(multiboot2_magic: u32, multiboot2_addr: *const BootInfor
                 info!("Last boot time: [{:0>4}-{:0>2}-{:0>2} {:0>2}:{:0>2}:{:0>2}]", date.year(), date.month(), date.day(), date.hour(), date.minute(), date.second());
             }
 
-            // Get current time
-            if let Some(efi_system_table) = efi_system_table() {
-                let system_table = efi_system_table.read();
-                let runtime_services = unsafe { system_table.runtime_services() };
-
-                // Write current boot time to NVRAM
-                if let Ok(time) = runtime_services.get_time() {
-                    unsafe { date_ptr.write(time) }
-                }
+            //mein Zeugs
+            let layout = Layout::from_size_align(1024, 8).unwrap();
+            if let Ok(nvram_ptr) = nvmem::allocate_nvram(layout) {
+                let nram = nvram_ptr.as_ptr() as *mut u8;
+                let nram = nram as *mut u64;
+                unsafe { nram.write(64); }
             }
+
+            let _ = Box::new_in(255, &ALLOCATOR);
+            let _ = Box::new_in(254, &ALLOCATOR);
+
+
+            //Get current time
+            // if let Some(efi_system_table) = efi_system_table() {
+            //     let system_table = efi_system_table.read();
+            //     let runtime_services = unsafe { system_table.runtime_services() };
+            //
+            //     // Write current boot time to NVRAM
+            //     if let Ok(time) = runtime_services.get_time() {
+            //         unsafe { date_ptr.write(time) }
+            //     }
+            // }
         }
     }
 
@@ -266,9 +284,9 @@ pub extern "C" fn start(multiboot2_magic: u32, multiboot2_addr: *const BootInfor
 
     // Create and register the 'shell' thread (from app image in ramdisk) in the scheduler
     scheduler().ready(Thread::load_application(initrd().entries()
-        .find(|entry| entry.filename().as_str().unwrap() == "shell")
-        .expect("Shell application not available!")
-        .data(), "shell", &Vec::new()));
+                                                   .find(|entry| entry.filename().as_str().unwrap() == "shell")
+                                                   .expect("Shell application not available!")
+                                                   .data(), "shell", &Vec::new()));
 
     // Disable terminal logging (remove terminal output stream)
     logger().remove(terminal().as_ref());

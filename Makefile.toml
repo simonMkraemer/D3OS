@@ -71,7 +71,10 @@ args = [
     "-audiodev", "id=audio0,driver=coreaudio",
 
     # Debugging configuration
-    "-S", "-gdb", "tcp::1234"
+    "-S", "-gdb", "tcp::1234",
+
+    # QEMU-exit in embedded code
+    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"
 ]
 
 [tasks.debug-signal-vscode]

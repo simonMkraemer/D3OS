@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
+use core::alloc::{Allocator, AllocError, Layout};
 use core::ptr;
 use core::cmp::PartialEq;
+use core::ptr::NonNull;
 use acpi::AcpiTable;
 use acpi::sdt::{SdtHeader, Signature};
 use bitflags::bitflags;
@@ -12,6 +14,7 @@ use x86_64::structures::paging::page::PageRange;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::{acpi_tables, process_manager};
 use crate::memory::MemorySpace;
+use crate::memory::nvram_allocator::NvramAllocator;
 
 #[allow(dead_code)]
 #[repr(u16)]
@@ -204,6 +207,9 @@ impl FlushHintAddressStructure {
     }
 }
 
+
+pub(crate) static ALLOCATOR: Locked<NvramAllocator> = Locked::new(NvramAllocator::new());
+
 pub fn init() {
     if let Ok(nfit) = acpi_tables().lock().find_table::<Nfit>() {
         info!("Found NFIT table");
@@ -220,6 +226,49 @@ pub fn init() {
             process_manager().read().kernel_process().expect("Failed to get kernel process")
                 .address_space()
                 .map(PageRange { start: start_page, end: start_page + (length / PAGE_SIZE as u64) }, MemorySpace::Kernel, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+
+            unsafe {
+                ALLOCATOR.lock().init(address as usize, length as usize);
+            }
         }
     }
+}
+
+pub struct Locked<A> {
+    inner: spin::Mutex<A>,
+}
+
+impl<A> Locked<A> {
+    pub const fn new(inner: A) -> Self {
+        Locked {
+            inner: spin::Mutex::new(inner),
+        }
+    }
+
+    pub fn lock(&self) -> spin::MutexGuard<A> {
+        self.inner.lock()
+    }
+}
+
+/// Align the given address `addr` upwards to alignment `align`.
+///
+/// Requires that `align` is a power of two.
+pub fn align_up(addr: usize, align: usize) -> usize {
+    (addr + align - 1) & !(align - 1)
+}
+
+pub fn allocate_nvram(layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    ALLOCATOR.allocate(layout)
+}
+
+pub unsafe fn deallocate_nvram(ptr: NonNull<u8>, layout: Layout) {
+    ALLOCATOR.deallocate(ptr, layout)
+}
+
+pub fn allocate_nvram_zeroed(layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    let result = allocate_nvram(layout)?;
+    unsafe {
+        ptr::write_bytes(result.as_ptr() as *mut u8, 0, layout.size());
+    }
+    Ok(result)
 }
