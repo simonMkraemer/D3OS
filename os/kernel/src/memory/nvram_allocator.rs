@@ -33,7 +33,7 @@ impl NvramAllocator {
 unsafe impl Allocator for Locked<NvramAllocator> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let mut nvalloc = self.lock(); // get a mutable reference
-
+        info!("Allocating memory: {:?}", layout);
         let alloc_start = align_up(nvalloc.next, layout.align());
         let alloc_end = match alloc_start.checked_add(layout.size()) {
             Some(end) => end,

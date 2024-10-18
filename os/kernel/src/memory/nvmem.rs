@@ -227,9 +227,8 @@ pub fn init() {
                 .address_space()
                 .map(PageRange { start: start_page, end: start_page + (length / PAGE_SIZE as u64) }, MemorySpace::Kernel, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
 
-            unsafe {
-                ALLOCATOR.lock().init(address as usize, length as usize);
-            }
+
+            ALLOCATOR.lock().init(address as usize, length as usize);
         }
     }
 }

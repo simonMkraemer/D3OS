@@ -240,16 +240,20 @@ pub extern "C" fn start(multiboot2_magic: u32, multiboot2_addr: *const BootInfor
             }
 
             //mein Zeugs
-            let layout = Layout::from_size_align(1024, 8).unwrap();
-            if let Ok(nvram_ptr) = nvmem::allocate_nvram(layout) {
-                let nram = nvram_ptr.as_ptr() as *mut u8;
-                let nram = nram as *mut u64;
-                unsafe { nram.write(64); }
-            }
+            // let layout = Layout::from_size_align(1024, 8).unwrap();
+            // if let Ok(nvram_ptr) = nvmem::allocate_nvram(layout) {
+            //     let nram = nvram_ptr.as_ptr() as *mut u8;
+            //     let nram = nram as *mut u64;
+            //     unsafe { nram.write(64); }
+            // }
 
-            let _ = Box::new_in(255, &ALLOCATOR);
-            let _ = Box::new_in(254, &ALLOCATOR);
+            // Allocate three distinct blocks in NVRAM
+            let ptr1 = Box::new_in(2147483647, &ALLOCATOR);
+            let ptr2 = Box::new_in(254, &ALLOCATOR);
+            let ptr3 = Box::new_in(253, &ALLOCATOR);
 
+            // Optionally, log the addresses for debugging
+            info!("ptr1: {:p}, ptr2: {:p}, ptr3: {:p}", ptr1, ptr2, ptr3);
 
             //Get current time
             // if let Some(efi_system_table) = efi_system_table() {
