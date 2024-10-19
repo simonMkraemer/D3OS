@@ -47,6 +47,7 @@ use x86_64::structures::paging::PhysFrame;
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::PhysAddr;
 use crate::device::pci::PciBus;
+use crate::memory::nvram_allocator::NvramAllocator;
 use crate::memory::PAGE_SIZE;
 use crate::process::process::ProcessManager;
 use crate::syscall::syscall_dispatcher::CoreLocalStorage;
@@ -215,6 +216,14 @@ static ALLOCATOR: KernelAllocator = KernelAllocator::new();
 
 pub fn allocator() -> &'static KernelAllocator {
     &ALLOCATOR
+}
+
+/// NVRam Allocator.
+/// Used for dynamic memory allocation in the NVRam.
+static NVRAM_ALLOCATOR: NvramAllocator = NvramAllocator::new();
+
+pub fn nvram_allocator() -> &'static NvramAllocator {
+    &NVRAM_ALLOCATOR
 }
 
 /// Kernel logger.

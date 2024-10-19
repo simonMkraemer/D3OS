@@ -21,6 +21,7 @@ use core::ffi::c_void;
 use core::mem::size_of;
 use core::ops::Deref;
 use core::ptr;
+use core::ptr::NonNull;
 use chrono::DateTime;
 use log::{debug, error, info, LevelFilter};
 use multiboot2::{BootInformation, BootInformationHeader, EFIMemoryMapTag, MemoryAreaType, MemoryMapTag, TagHeader};
@@ -239,21 +240,52 @@ pub extern "C" fn start(multiboot2_magic: u32, multiboot2_addr: *const BootInfor
                 info!("Last boot time: [{:0>4}-{:0>2}-{:0>2} {:0>2}:{:0>2}:{:0>2}]", date.year(), date.month(), date.day(), date.hour(), date.minute(), date.second());
             }
 
-            //mein Zeugs
-            // let layout = Layout::from_size_align(1024, 8).unwrap();
-            // if let Ok(nvram_ptr) = nvmem::allocate_nvram(layout) {
-            //     let nram = nvram_ptr.as_ptr() as *mut u8;
-            //     let nram = nram as *mut u64;
-            //     unsafe { nram.write(64); }
-            // }
-
             // Allocate three distinct blocks in NVRAM
-            let ptr1 = Box::new_in(2147483647, &ALLOCATOR);
-            let ptr2 = Box::new_in(254, &ALLOCATOR);
-            let ptr3 = Box::new_in(253, &ALLOCATOR);
 
-            // Optionally, log the addresses for debugging
-            info!("ptr1: {:p}, ptr2: {:p}, ptr3: {:p}", ptr1, ptr2, ptr3);
+            /*
+            let ptr1 = Box::new_in(1, &ALLOCATOR);
+            let ptr2 = Box::new_in(2, &ALLOCATOR);
+            let ptr3 = Box::new_in(3, &ALLOCATOR);
+            let ptr4 = Box::new_in(4, &ALLOCATOR);
+            let ptr5 = Box::new_in(5, &ALLOCATOR);
+            */
+
+            //test merge after deallocate
+            let layout = Layout::from_size_align(4, 8).unwrap();
+            let mut pointers = Vec::new();
+
+            for i in 1..=5 {
+                let nvram_ptr = nvmem::allocate_nvram(layout);
+
+                if let Ok(nvram_ptr) = nvram_ptr {
+                    let nvram = nvram_ptr.as_ptr() as *mut u64;
+                    unsafe {
+                        nvram.write(i as u64);  // Schreibe die Zahl `i` in den allokierten Speicher
+                    }
+                    pointers.push(nvram_ptr);  // Speichere den Pointer für später
+                } else {
+                    println!("Fehler bei der Allokation für i = {}", i);
+                }
+            }
+
+
+            // Später kannst du den Speicher manuell freigeben:
+
+            unsafe {
+                nvmem::deallocate_nvram(NonNull::new(pointers[1].as_ptr() as *mut u8).unwrap(), layout);
+                nvmem::deallocate_nvram(NonNull::new(pointers[0].as_ptr() as *mut u8).unwrap(), layout);
+            }
+
+            let last_ptr = nvmem::allocate_nvram(layout);
+            if let Ok(last_ptr) = last_ptr {
+                let last = last_ptr.as_ptr() as *mut u64;
+                unsafe {
+                    last.write(42);  // Schreibe die Zahl `42` in den allokierten Speicher
+                }
+            } else {
+                println!("Fehler bei der Allokation für last");
+            }
+
 
             //Get current time
             // if let Some(efi_system_table) = efi_system_table() {

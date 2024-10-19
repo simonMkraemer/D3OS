@@ -208,7 +208,7 @@ impl FlushHintAddressStructure {
 }
 
 
-pub(crate) static ALLOCATOR: Locked<NvramAllocator> = Locked::new(NvramAllocator::new());
+pub(crate) static ALLOCATOR: NvramAllocator = NvramAllocator::new();
 
 pub fn init() {
     if let Ok(nfit) = acpi_tables().lock().find_table::<Nfit>() {
@@ -220,6 +220,7 @@ pub fn init() {
             let address = spa.base;
             let length = spa.length;
             info!("Found non-volatile memory (Address: [0x{:x}], Length: [{} MiB])", address, length / 1024 / 1024);
+            info!("With real length: {}", length);
 
             // Map non-volatile memory range to kernel address space
             let start_page = Page::from_start_address(VirtAddr::new(address)).unwrap();
@@ -228,7 +229,7 @@ pub fn init() {
                 .map(PageRange { start: start_page, end: start_page + (length / PAGE_SIZE as u64) }, MemorySpace::Kernel, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
 
 
-            ALLOCATOR.lock().init(address as usize, length as usize);
+            ALLOCATOR.init(&spa.as_phys_frame_range());
         }
     }
 }
