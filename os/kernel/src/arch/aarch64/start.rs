@@ -1,32 +1,34 @@
 #![no_std]
 #![no_main]
 
+mod bootinfo;
+mod multiboot2;
+mod serial;
+
 use core::panic::PanicInfo;
 
-const PL011_UART0_BASE: usize = 0x0900_0000;
-const UARTDR: *mut u32 = PL011_UART0_BASE as *mut u32;
-const UARTFR: *mut u32 = (PL011_UART0_BASE + 0x18) as *mut u32;
-const UARTFR_TXFF: u32 = 1 << 5;
-
-fn serial_write_byte(byte: u8) {
-    while unsafe { core::ptr::read_volatile(UARTFR) } & UARTFR_TXFF != 0 {
-        core::hint::spin_loop();
-    }
-    unsafe { core::ptr::write_volatile(UARTDR, u32::from(byte)) };
-}
-
-fn serial_write_str(s: &str) {
-    for byte in s.bytes() {
-        if byte == b'\n' {
-            serial_write_byte(b'\r');
-        }
-        serial_write_byte(byte);
-    }
-}
-
 #[unsafe(no_mangle)]
-pub extern "C" fn start_aarch64(_x0: usize, _x1: usize, _x2: usize, _x3: usize) -> ! {
-    serial_write_str("HELLO WORLD start\n");
+pub extern "C" fn start_aarch64(x0: usize, x1: usize, x2: usize, x3: usize) -> ! {
+    serial::write_str("HELLO WORLD start\n");
+    serial::write_labelled_hex("x0 = ", x0);
+    serial::write_labelled_hex("x1 = ", x1);
+    serial::write_labelled_hex("x2 = ", x2);
+    serial::write_labelled_hex("x3 = ", x3);
+
+    if x2 == multiboot2::MAGIC {
+        serial::write_str("x2 matches Multiboot2 magic\n");
+    } else {
+        serial::write_str("x2 does not match Multiboot2 magic\n");
+    }
+
+    multiboot2::dump_words(x1, 4);
+    multiboot2::dump_tags(x1);
+
+    match multiboot2::parse_boot_info(x1) {
+        Some(parsed) => bootinfo::dump(&parsed),
+        None => serial::write_str("failed to parse boot info\n"),
+    }
+
     loop {
         core::hint::spin_loop();
     }
@@ -34,7 +36,7 @@ pub extern "C" fn start_aarch64(_x0: usize, _x1: usize, _x2: usize, _x3: usize) 
 
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
-    serial_write_str("HELLO WORLD panic\n");
+    serial::write_str("HELLO WORLD panic\n");
     loop {
         core::hint::spin_loop();
     }

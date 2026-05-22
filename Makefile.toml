@@ -181,7 +181,9 @@ dependencies = [ "create-initrd-directory" ]
 env = { KERNEL_ARCH = "x86_64" }
 
 [tasks.link-members-arm]
-run_task = { name = "link", fork = true }
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/os/kernel"
+command = "cargo"
+args = [ "make", "--no-workspace", "link" ]
 dependencies = [ "create-initrd-directory" ]
 env = { KERNEL_ARCH = "aarch64" }
 

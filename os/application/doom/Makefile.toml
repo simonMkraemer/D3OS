@@ -156,6 +156,8 @@ args = [
     "${CARGO_MAKE_WORKING_DIRECTORY}/doomgeneric/doomgeneric/z_zone.c"
 ]
 condition = { files_modified = { input = [
+#    "${CARGO_MAKE_WORKING_DIRECTORY}/doomgeneric/**/*.c",
+#    "${CARGO_MAKE_WORKING_DIRECTORY}/doomgeneric/**/*.h",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/os/library/libc/**/*.h",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/os/library/libc/**/*.c",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/os/library/libc/**/*.rs"
