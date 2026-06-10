@@ -64,6 +64,7 @@ args = [
     "-cpu", "cortex-a57",
     "-m", "512M",
     "-serial", "stdio",
+    "-device", "ramfb",
     "-drive", "if=pflash,format=raw,readonly=on,file=${ARM_QEMU_CODE}",
     "-drive", "if=pflash,format=raw,file=${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/AAVMF_VARS.fd",
     "-drive", "driver=raw,if=none,id=boot,file.filename=d3os-arm.img",
