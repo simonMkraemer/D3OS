@@ -6,78 +6,98 @@
    ║ Public functions:                                                       ║
    ║   - wait:       Blocks calling thread if the given predicate is true.   ║
    ║   - notify_one: Deblocks one waiting thread (if any).                   ║
+   ║   - notify_all: Deblocks all waiting threads (if any).                  ║
    ╟─────────────────────────────────────────────────────────────────────────╢
-   ║ Author: Michael Schoettner, Univ. Duesseldorf, 30.12.2025               ║
+   ║ Author: Michael Schoettner, Univ. Duesseldorf, 16.02.2026               ║
    ╚═════════════════════════════════════════════════════════════════════════╝
 */
 
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
+use uuid::Uuid;
 
-use crate::scheduler;
-use crate::sync::irqsave_spinlock::IrqSaveSpinlock;
+use crate::{process::core_local_storage::scheduler, sync::irqsave_spinlock::IrqSaveSpinlock};
 
 pub struct WaitQueue {
-    queue: IrqSaveSpinlock<VecDeque<(usize, usize)>>,
+    queue: IrqSaveSpinlock<VecDeque<(Uuid, usize)>>,
 }
 
 impl WaitQueue {
     pub fn new() -> WaitQueue {
         WaitQueue {
-            queue: IrqSaveSpinlock::new(VecDeque::<(usize, usize)>::new()),
+            queue: IrqSaveSpinlock::new(VecDeque::<(Uuid, usize)>::new()),
         }
     }
 
     /// Block until `pred()` becomes true.
-    pub fn wait<F>(&self, mut pred: F)
+    pub fn wait<F>(&self, mut pred: F, _message: &str)
     where
         F: FnMut() -> bool,
     {
-        // Because of spurious wakeups, we need to loop here.
+        let ids = scheduler().current_ids();
+
         loop {
-            // Check predicate without acquiring the queue lock
             if pred() {
                 return;
             }
 
-            // Take the queue lock synchronizing against `notify_one`
             {
-                let mut quard = self.queue.lock(); // IRQs disabled & spinlocked here
+                let mut guard = self.queue.lock();
 
+                // re-check under lock
                 if pred() {
-                    // Condition became true while we were getting the lock; don't sleep.
                     return;
                 }
 
-                // Get caller thread's (pid, tid)
-                let (pid, tid) = scheduler().current_ids();
-
-                // Enqueue ourselves as a waiter
-                quard.push_back((pid, tid));
-
-                // Mark the caller thread as blocked
-                scheduler().prepare_to_block();
-
-                // lock is dropped here => IRQs restored
+                // register current thread with the WaitQueue
+                guard.push_back(ids);
             }
 
-            // Yield the CPU to other threads. This must be outside the lock because we free cpu here.
-            scheduler().block_if_allowed();
-
-            // On wake, loop and check pred() again.
+            scheduler().block();
         }
     }
 
     /// Wake up exactly one waiter (if any). Returns true if someone was woken up.
     pub fn notify_one(&self) -> bool {
         let mut guard = self.queue.lock();
+        
+        let mut unblocked_success_idx = None;
 
-        while let Some((pid, tid)) = guard.pop_front() {
-            if scheduler().unblock(pid, tid) {
-                return true;
+        // check queue until one thread is successfully unblocked
+        for (idx, (pid, tid)) in guard.iter().enumerate() {
+            if scheduler().unblock(*pid, *tid) {
+                unblocked_success_idx = Some(idx);
+                break;
             }
-            // else: stale waiter (killed/exited) -> keep going
         }
 
-        false
+        match unblocked_success_idx {
+            Some(idx) => guard.remove(idx).is_some(),
+            None => false
+        }
+    }
+
+    /// Wake up all waiters currently queued.
+    /// Returns the number of threads actually unblocked (stale entries are ignored).
+    pub fn notify_all(&self) -> usize {
+        let mut guard = self.queue.lock();
+        
+        let mut unblocked_success_idxs = Vec::new();
+
+        // check queue until one thread is successfully unblocked
+        for (idx, (pid, tid)) in guard.iter().enumerate() {
+            if scheduler().unblock(*pid, *tid) {
+                unblocked_success_idxs.push(idx);
+            }
+        }
+
+        let mut woke = 0;
+
+        for idx in unblocked_success_idxs {
+            if guard.remove(idx as usize).is_some() {
+                woke += 1;
+            }
+        }
+
+        woke
     }
 }

@@ -68,6 +68,10 @@ pub enum SystemCall {
     KeyboardRead,
     MapSystemInfo,
     Log,
+    ShmOpen,
+    ShmAttach,
+    ShmDetach,
+    ShmUnlink,
 }
 
 pub const NUM_SYSCALLS: usize = mem::variant_count::<SystemCall>() as usize;

@@ -5,28 +5,24 @@ skip_rust_env_info = true
 skip_crate_env_info = true
 
 [env.development]
-CARGO_CFG_TARGET_FAMILY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os_kernel.json"
-BUILD_DIRECTORY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target/d3os_kernel/debug"
+BUILD_DIRECTORY = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/d3os_kernel/debug"
 CARGO_BUILD_OPTION = "--lib"
 
 [env.production]
-CARGO_CFG_TARGET_FAMILY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os_kernel.json"
-BUILD_DIRECTORY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target/d3os_kernel/release"
+BUILD_DIRECTORY = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/d3os_kernel/release"
 CARGO_BUILD_OPTION = "--release"
 
 [env]
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
-BOOTLOADER_DIRECTORY = "${CARGO_MAKE_WORKING_DIRECTORY}/../../loader"
+CARGO_CFG_TARGET_FAMILY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os_kernel.json"
 RUST_TARGET_PATH = "${CARGO_MAKE_WORKING_DIRECTORY}"
 SOURCE_DIRECTORY = "${CARGO_MAKE_WORKING_DIRECTORY}/src"
 LIBRARY_DIRECTORY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/os/library"
-X86_LINKER_FILE = "${CARGO_MAKE_WORKING_DIRECTORY}/link/x86_64.ld"
-AARCH64_LINKER_FILE = "${CARGO_MAKE_WORKING_DIRECTORY}/link/aarch64.ld"
+LINKER_FILE = "${CARGO_MAKE_WORKING_DIRECTORY}/link.ld"
 RUST_OBJECT = "${BUILD_DIRECTORY}/lib${CARGO_MAKE_PROJECT_NAME}.a"
 ASM_OBJECT = "${BUILD_DIRECTORY}/boot.o"
-AARCH64_ASM_OBJECT = "${BUILD_DIRECTORY}/boot_aarch64.o"
+ASM_OBJECT_AP = "${BUILD_DIRECTORY}/boot_ap.o"
 KERNEL = "${BOOTLOADER_DIRECTORY}/${CARGO_MAKE_PROJECT_NAME}.elf"
-RUSTFLAGS="-C target-cpu=x86-64-v3"
 
 [tasks.default]
 alias = "link"
@@ -34,90 +30,37 @@ alias = "link"
 # Build tasks
 
 [tasks.compile]
-script_runner = "bash"
-script = '''
-if [ "${KERNEL_ARCH:-}" = "x86_64" ]; then
-  cargo make --no-workspace compile-x86_64
-elif [ "${KERNEL_ARCH:-}" = "aarch64" ]; then
-  cargo make --no-workspace compile-aarch64
-else
-  echo "KERNEL_ARCH must be set to x86_64 or aarch64"
-  exit 1
-fi
-'''
-
-[tasks.compile-x86_64]
 command = "cargo"
-args = [ "build", "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem", "--target", "${CARGO_CFG_TARGET_FAMILY}", "${CARGO_BUILD_OPTION}" ]
+args = [ "build", "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem", "-Z", "json-target-spec", "--target", "${CARGO_CFG_TARGET_FAMILY}", "${CARGO_BUILD_OPTION}" ]
 condition = { files_modified = { input = [
     "${CARGO_MAKE_WORKING_DIRECTORY}/Cargo.toml", "${SOURCE_DIRECTORY}/**/*.rs",
     "${LIBRARY_DIRECTORY}/graphic/Cargo.toml", "${LIBRARY_DIRECTORY}/graphic/src/**/*.rs",
     "${LIBRARY_DIRECTORY}/stream/Cargo.toml", "${LIBRARY_DIRECTORY}/stream/src/**/*.rs",
     "${LIBRARY_DIRECTORY}/syscall/Cargo.toml", "${LIBRARY_DIRECTORY}/syscall/src/**/*.rs" ], output = [ "${BUILD_DIRECTORY}/lib${CARGO_MAKE_PROJECT_NAME}*" ] } }
 
-[tasks.compile-aarch64]
-command = "rustc"
-args = [ "--target", "aarch64-unknown-none", "-C", "panic=abort", "-C", "linker=rust-lld", "-C", "link-arg=${AARCH64_ASM_OBJECT}", "-C", "link-arg=-T${AARCH64_LINKER_FILE}", "-o", "${KERNEL}", "${SOURCE_DIRECTORY}/arch/aarch64/start.rs" ]
-dependencies = [ "build-asm-aarch64" ]
-condition = { files_modified = { input = [ "${SOURCE_DIRECTORY}/arch/aarch64/start.rs", "${SOURCE_DIRECTORY}/arch/aarch64/boot.S", "${AARCH64_LINKER_FILE}" ], output = [ "${KERNEL}" ] } }
-
 [tasks.build-asm]
-script_runner = "bash"
-script = '''
-if [ "${KERNEL_ARCH:-}" = "x86_64" ]; then
-  cargo make --no-workspace build-asm-x86_64
-elif [ "${KERNEL_ARCH:-}" = "aarch64" ]; then
-  exit 0
-else
-  echo "KERNEL_ARCH must be set to x86_64 or aarch64"
-  exit 1
-fi
-'''
-
-[tasks.build-asm-x86_64]
 command = "nasm"
 args = [ "-f", "elf64", "-w+error=label-redef-late", "-o", "${ASM_OBJECT}", "${SOURCE_DIRECTORY}/boot.asm" ]
 condition = { files_modified = { input = [ "${SOURCE_DIRECTORY}/boot.asm" ], output = [ "${BUILD_DIRECTORY}/boot.o" ] } }
 
-[tasks.build-asm-aarch64]
-command = "clang"
-args = [ "--target=aarch64-none-elf", "-c", "-o", "${AARCH64_ASM_OBJECT}", "${SOURCE_DIRECTORY}/arch/aarch64/boot.S" ]
-condition = { files_modified = { input = [ "${SOURCE_DIRECTORY}/arch/aarch64/boot.S" ], output = [ "${AARCH64_ASM_OBJECT}" ] } }
+[tasks.build-asm-ap]
+command = "nasm"
+args = [ "-f", "elf64", "-w+error=label-redef-late", "-o", "${ASM_OBJECT_AP}", "${SOURCE_DIRECTORY}/boot_ap.asm" ]
+condition = { files_modified = { input = [ "${SOURCE_DIRECTORY}/boot_ap.asm" ], output = [ "${BUILD_DIRECTORY}/boot_ap.o" ] } }
 
 [tasks.link]
-script_runner = "bash"
-script = '''
-if [ "${KERNEL_ARCH:-}" = "x86_64" ]; then
-  cargo build -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --target ${CARGO_CFG_TARGET_FAMILY} ${CARGO_BUILD_OPTION}
-  nasm -f elf64 -w+error=label-redef-late -o ${ASM_OBJECT} ${SOURCE_DIRECTORY}/boot.asm
-  ${LINKER} -n -T ${X86_LINKER_FILE} -o ${KERNEL} ${ASM_OBJECT} ${RUST_OBJECT} -z noexecstack
-elif [ "${KERNEL_ARCH:-}" = "aarch64" ]; then
-  mkdir -p ${BUILD_DIRECTORY}
-  clang --target=aarch64-none-elf -c -o ${AARCH64_ASM_OBJECT} ${SOURCE_DIRECTORY}/arch/aarch64/boot.S
-  rustc --target aarch64-unknown-none -C panic=abort -C linker=rust-lld -C link-arg=${AARCH64_ASM_OBJECT} -C link-arg=-T${AARCH64_LINKER_FILE} -C link-arg=-z -C link-arg=max-page-size=0x1000 -o ${KERNEL} ${SOURCE_DIRECTORY}/arch/aarch64/start.rs
-else
-  echo "KERNEL_ARCH must be set to x86_64 or aarch64"
-  exit 1
-fi
-'''
-
-[tasks.link-x86_64]
 command = "${LINKER}"
-args = [ "-n", "-T", "${X86_LINKER_FILE}", "-o", "${KERNEL}", "${ASM_OBJECT}", "${RUST_OBJECT}", "-z", "noexecstack" ]
-dependencies = [ "compile-x86_64", "build-asm-x86_64" ]
-condition = { files_modified = { input = [ "${BUILD_DIRECTORY}/lib${CARGO_MAKE_PROJECT_NAME}*", "${X86_LINKER_FILE}", "${BUILD_DIRECTORY}/boot.o" ], output = [ "${BOOTLOADER_DIRECTORY}/kernel.elf" ] } }
-
-[tasks.link-aarch64]
-dependencies = [ "compile-aarch64" ]
-command = "true"
+args = [ "-n", "-T", "${LINKER_FILE}", "-o", "${KERNEL}", "${ASM_OBJECT}", "${ASM_OBJECT_AP}", "${RUST_OBJECT}" ]
+dependencies = [ "compile", "build-asm" , "build-asm-ap" ]
+condition = { files_modified = { input = [ "${BUILD_DIRECTORY}/lib${CARGO_MAKE_PROJECT_NAME}*", "${LINKER_FILE}" ], output = [ "${BOOTLOADER_DIRECTORY}/kernel.elf" ] } }
 
 [tasks.check]
 command = "cargo"
-args = [ "check", "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem", "--target", "${CARGO_CFG_TARGET_FAMILY}", "${CARGO_BUILD_OPTION}" ]
+args = [ "check", "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem", "-Z", "json-target-spec", "--target", "${CARGO_CFG_TARGET_FAMILY}", "${CARGO_BUILD_OPTION}" ]
 
 [tasks.clippy]
 command = "cargo"
-args = [ "clippy", "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem", "--target", "${CARGO_CFG_TARGET_FAMILY}", "${CARGO_BUILD_OPTION}" ]
+args = [ "clippy", "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem", "-Z", "json-target-spec", "--target", "${CARGO_CFG_TARGET_FAMILY}", "${CARGO_BUILD_OPTION}" ]
 
 # Cleanup tasks
 

@@ -4,7 +4,7 @@
    ║ Managing opened objects in a global table (OPEN_OBJECTS). And providing ║
    ║ all major functions for the naming service.                             ║
    ╟─────────────────────────────────────────────────────────────────────────╢
-   ║ Author: Michael Schoettner, Univ. Duesseldorf, 23.12.2025               ║
+   ║ Author: Michael Schoettner, Univ. Duesseldorf, 07.04.2026               ║
    ╚═════════════════════════════════════════════════════════════════════════╝
 */
 
@@ -58,6 +58,13 @@ pub(super) fn open(path: &str, flags: OpenOptions) -> Result<usize, Errno> {
             found_named_object.as_pipe()?.open(flags)?; // ignore return value
     }
 
+    // call the 'open' for a directory with flag `WRITEONLY` 
+    if found_named_object.is_dir() {
+        if flags.contains(OpenOptions::WRITEONLY) || flags.contains(OpenOptions::READWRITE) {
+            return Err(Errno::EISDIR);
+        }
+    }
+
     // try to allocate an new handle
     get_open_object_table().allocate_handle(Arc::new(OpenedObject::new(Arc::new(found_named_object), AtomicUsize::new(0), flags)))
 }
@@ -80,6 +87,11 @@ pub(super) fn write(fh: usize, buf: &[u8]) -> Result<usize, Errno> {
                 Ok(bytes_written) // Return the bytes written
             });
         }
+
+        if opened_object.named_object.is_dir() {
+            return Err(Errno::EBADF);
+        }
+
         Err(Errno::ENOTSUP)
     })
 }
@@ -102,6 +114,11 @@ pub(super) fn read(fh: usize, buf: &mut [u8]) -> Result<usize, Errno> {
                 Ok(bytes_read) // Return the bytes written
             });
         }
+
+        if opened_object.named_object.is_dir() {
+            return Err(Errno::EISDIR);
+        }
+        
         Err(Errno::ENOTSUP)
     })
 }

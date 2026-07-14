@@ -34,21 +34,23 @@
    ║ Author: Fabian Ruhland & Michael Schoettner, 04.01.2026, HHU            ║
    ╚═════════════════════════════════════════════════════════════════════════╝
 */
-
+use alloc::alloc::alloc;
 use crate::consts::MAIN_USER_STACK_START;
 use crate::consts::MAX_USER_STACK_SIZE;
 use crate::consts::USER_SPACE_ENV_START;
 use crate::initrd;
 use crate::memory::PAGE_SIZE;
+use crate::process::core_local_storage::scheduler;
 use crate::memory::stack;
 use crate::memory::stack::StackAllocator;
 use crate::memory::vma::VmaType;
 use crate::process::process::Process;
 use crate::process::scheduler;
 use crate::syscall::syscall_dispatcher::CORE_LOCAL_STORAGE_TSS_RSP0_PTR_INDEX;
-use crate::{process_manager, scheduler, tss};
+use crate::{process_manager, tss};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::alloc::Layout;
 use core::arch::naked_asm;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -62,6 +64,8 @@ use x86_64::PrivilegeLevel::Ring3;
 use x86_64::VirtAddr;
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::paging::Page;
+use crate::device::cpu;
+use crate::device::cpu::{XSaveComponents, XSaveState};
 
 /// kernel & user stack of a thread
 struct Stacks {
@@ -101,6 +105,7 @@ pub struct Thread {
     entry: extern "sysv64" fn(),
     state: AtomicU8,
     wake_pending: AtomicBool, // false => allowed to block; true => do NOT block (wake pending)
+    xsave_state: XSaveState
 }
 
 impl Stacks {
@@ -139,6 +144,7 @@ impl Thread {
             entry,
             state: AtomicU8::new(ThreadState::Created.as_u8()),
             wake_pending: AtomicBool::new(false),
+            xsave_state: XSaveState::new()
         };
 
         thread.prepare_kernel_stack();
@@ -155,7 +161,7 @@ impl Thread {
         };
 
         let current_process = process_manager().read().current_process();
-        let new_process = process_manager().write().create_process();
+        let new_process = process_manager().write().create_process(name.into());
         let pid = new_process.id();
 
         info!("load_application: pid = {pid}, name = {name}");
@@ -206,6 +212,7 @@ impl Thread {
             entry,
             state: AtomicU8::new(ThreadState::Created.as_u8()),
             wake_pending: AtomicBool::new(false),
+            xsave_state: XSaveState::new()
         };
 
         thread.prepare_kernel_stack();
@@ -292,6 +299,14 @@ impl Thread {
         self.id
     }
 
+    pub fn store_fpu_context(&self) {
+        cpu::xsave(&self.xsave_state, XSaveComponents::X87_FPU | XSaveComponents::SSE | XSaveComponents::AVX)
+    }
+
+    pub fn restore_fpu_context(&self) {
+        cpu::xrstor(&self.xsave_state, XSaveComponents::X87_FPU | XSaveComponents::SSE | XSaveComponents::AVX)
+    }
+
     /// Helper function, returns highest useable stack address of kernel stack  of 'self'
     fn kernel_stack_addr(&self) -> VirtAddr {
         let stacks = self.stacks.lock();
@@ -304,6 +319,8 @@ impl Thread {
         let mut stacks = self.stacks.lock();
 
         // init stack with 0s
+        info!("Stack capacity: {}", stacks.kernel_stack.capacity());
+        info!("Addr: {:x}", stacks.kernel_stack.as_ptr() as u64);
         for _ in 0..stacks.kernel_stack.capacity() {
             stacks.kernel_stack.push(0);
         }
@@ -383,10 +400,12 @@ impl Thread {
             .iter()
             .filter(|header| header.p_type == elf64::program_header::PT_LOAD)
             .try_for_each(|header| {
-                if header.p_vaddr == 0 || header.p_memsz == 0 {
+
+                if header.p_type != elf64::program_header::PT_LOAD || header.p_vaddr == 0 || header.p_memsz == 0 || header.p_filesz > header.p_memsz {
                     warn!("skipping empty ELF section {header:?}");
                     return Ok(());
                 }
+
                 // Calc total number of pages for .text and .bss = 'p_memsz'
                 let total_page_count = header.p_memsz.div_ceil(PAGE_SIZE.try_into().unwrap());
 
@@ -421,7 +440,7 @@ impl Thread {
                     let bss_page_count = total_page_count - code_page_count;
                     let dest_page_start = vma.range.start.start_address().as_u64();
                     let mut dest_offset: u64 = code_page_count as u64 * PAGE_SIZE as u64;
-
+                    
                     // copy remaining pages
                     for _i in 0..bss_page_count {
                         // get destination physical address
@@ -555,6 +574,13 @@ impl Thread {
 unsafe extern "C" fn thread_kernel_start(old_rsp0: u64) {
     naked_asm!(
         "mov rsp, rdi", // First parameter -> load 'old_rsp0'
+
+        // Set Task Switched bit in CR0
+        "mov rax, cr0",
+        "or rax, 0x00000008",
+        "mov cr0, rax",
+
+        // Load registers from prepared stack
         "pop rax",
         "wrgsbase rax",
         "pop rax",
@@ -627,6 +653,11 @@ unsafe extern "C" fn thread_switch(current_rsp0: *mut u64, next_rsp0: u64, next_
     // Switch address space (fourth parameter 'next_cr3')
     "mov cr3, rcx",
 
+    // Set Task Switched bit in CR0
+    "mov rax, cr0",
+    "or rax, 0x00000008",
+    "mov cr0, rax",
+
     // Load registers of next thread by using 'next_rsp0' (second parameter)
     "mov rsp, rsi",
     "pop rax", "wrgsbase rax",
@@ -665,7 +696,7 @@ pub enum ThreadState {
     Created,
     Ready,       // runnable, waiting to be scheduled
     Running,     // currently executing on a core
-    PreBlocking, // prepared to block
+    Parking,     // prepared to block
     Blocked,     // blocked
     Sleeping,    // sleeping for some time
     Exited,      // finished, waiting to be reaped
@@ -677,7 +708,7 @@ impl ThreadState {
             ThreadState::Created => 0,
             ThreadState::Ready => 1,
             ThreadState::Running => 2,
-            ThreadState::PreBlocking => 3,
+            ThreadState::Parking => 3,
             ThreadState::Blocked => 4,
             ThreadState::Sleeping => 5,
             ThreadState::Exited => 6,
@@ -689,7 +720,7 @@ impl ThreadState {
             0 => ThreadState::Created,
             1 => ThreadState::Ready,
             2 => ThreadState::Running,
-            3 => ThreadState::PreBlocking,
+            3 => ThreadState::Parking,
             4 => ThreadState::Blocked,
             5 => ThreadState::Sleeping,
             6 => ThreadState::Exited,

@@ -4,11 +4,9 @@ resolver = "2"
 members = [
     "os/kernel",
     "os/application/about",
-    #"os/application/doom",
     "os/application/hello",
     "os/application/helloc",
     "os/application/shell",
-    "os/application/legacy_shell",
     "os/application/uptime",
     "os/application/date",
     "os/application/ls",
@@ -25,6 +23,12 @@ members = [
     "os/application/terminal_emulator",
     "os/application/keytest",
     "os/application/netperf",
+    "os/application/shmtest",
+    "os/application/logtest",
+    "os/application/httpd",
+    "os/application/proctest",
+    "os/application/cat",
+    "os/application/avxtest",
 ]
 
 # [profile.release]
