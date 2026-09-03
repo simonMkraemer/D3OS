@@ -8,9 +8,8 @@ INITRD_DIRECTORY = "${BOOTLOADER_DIRECTORY}/initrd"
 OVMF_URL = "https://retrage.github.io/edk2-nightly/bin/RELEASEX64_OVMF.fd"
 ARM_QEMU_CODE = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = "/usr/share/AAVMF/AAVMF_CODE.fd", mapping = { "macos" = "/opt/homebrew/share/qemu/edk2-aarch64-code.fd" } }
 ARM_QEMU_VARS_TEMPLATE = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = "/usr/share/AAVMF/AAVMF_VARS.fd", mapping = { "macos" = "/opt/homebrew/share/qemu/edk2-arm-vars.fd" } }
-LOCAL_TOWBOOT_ARM_EFI = "/Users/simonkraemer/fun/towboot/target/aarch64-unknown-uefi/debug/towboot.efi"
-TOWBOOT_VERSION = "0.10.0"
-TOWBOOT_URL = "https://github.com/hhuOS/towboot/releases/download/v${TOWBOOT_VERSION}/towbootctl-v${TOWBOOT_VERSION}"
+TOWBOOT_DIRECTORY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tools/towboot"
+TOWBOOTCTL = "${TOWBOOT_DIRECTORY}/target/debug/towbootctl"
 TAR = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = "tar", mapping = { "macos" = "gtar" } }
 LINKER = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = "ld", mapping = { "macos" = "x86_64-elf-ld" } }
 QEMU_AUDIO_DEVICE = { source = "${CARGO_MAKE_RUST_TARGET_OS}", default_value = "pa", mapping = { "macos" = "coreaudio" } }
@@ -269,32 +268,25 @@ condition = { files_modified = { input = [ "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}
 
 [tasks.image]
 cwd = "${BOOTLOADER_DIRECTORY}"
-command = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/towbootctl"
+command = "${TOWBOOTCTL}"
 env = { KERNEL_ARCH = "x86_64" }
 args = [ "image", "--target", "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os.img", "--", "-config", "towboot.toml"]
 dependencies = [ "link-members", "initrd", "towbootctl" ]
-condition = { files_modified = { input = [ "${BOOTLOADER_DIRECTORY}/initrd.tar", "${BOOTLOADER_DIRECTORY}/kernel.elf", "${BOOTLOADER_DIRECTORY}/towboot.toml", "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/towbootctl" ], output = [ "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os.img" ] } }
+condition = { files_modified = { input = [ "${BOOTLOADER_DIRECTORY}/initrd.tar", "${BOOTLOADER_DIRECTORY}/kernel.elf", "${BOOTLOADER_DIRECTORY}/towboot.toml", "${TOWBOOTCTL}" ], output = [ "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os.img" ] } }
 
 [tasks.image-arm]
 cwd = "${BOOTLOADER_DIRECTORY}"
-command = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/towbootctl"
+command = "${TOWBOOTCTL}"
 env = { KERNEL_ARCH = "aarch64" }
 args = [ "image", "--target", "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os-arm.img", "--", "-config", "towboot.toml"]
 dependencies = [ "link-members-arm", "initrd-arm", "towbootctl" ]
-condition = { files_modified = { input = [ "${BOOTLOADER_DIRECTORY}/initrd.tar", "${BOOTLOADER_DIRECTORY}/kernel.elf", "${BOOTLOADER_DIRECTORY}/towboot.toml", "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/towbootctl" ], output = [ "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os-arm.img" ] } }
+condition = { files_modified = { input = [ "${BOOTLOADER_DIRECTORY}/initrd.tar", "${BOOTLOADER_DIRECTORY}/kernel.elf", "${BOOTLOADER_DIRECTORY}/towboot.toml", "${TOWBOOTCTL}" ], output = [ "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os-arm.img" ] } }
 
 [tasks.towbootctl]
-script = '''
-wget -O towbootctl "${TOWBOOT_URL}-x86_64-linux"
-chmod +x towbootctl
-'''
-condition = { files_not_exist = [ "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/towbootctl" ] }
-
-[tasks.towbootctl.mac]
-script = '''
-wget -O towbootctl "${TOWBOOT_URL}-macos"
-chmod +x towbootctl
-'''
+cwd = "${TOWBOOT_DIRECTORY}"
+command = "rustup"
+args = [ "run", "nightly", "cargo", "build", "-p", "towbootctl", "--features", "binary" ]
+condition = { files_modified = { input = [ "${TOWBOOT_DIRECTORY}/Cargo.toml", "${TOWBOOT_DIRECTORY}/Cargo.lock", "${TOWBOOT_DIRECTORY}/rust-toolchain.toml", "${TOWBOOT_DIRECTORY}/towboot/**/*.rs", "${TOWBOOT_DIRECTORY}/towboot_aa64/**/*.rs", "${TOWBOOT_DIRECTORY}/towboot_aa64/Cargo.toml", "${TOWBOOT_DIRECTORY}/towbootctl/**/*.rs", "${TOWBOOT_DIRECTORY}/towbootctl/Cargo.toml" ], output = [ "${TOWBOOTCTL}" ] } }
 
 # Cleanup tasks
 

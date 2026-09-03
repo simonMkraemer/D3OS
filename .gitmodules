@@ -1,3 +1,7 @@
 [submodule "os/application/doom/doomgeneric"]
 	path = os/application/doom/doomgeneric
 	url = https://github.com/ozkl/doomgeneric.git
+[submodule "tools/towboot"]
+	path = tools/towboot
+	url = https://github.com/hhuOS/towboot.git
+	branch = main

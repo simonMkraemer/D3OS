@@ -95,13 +95,13 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, x2: usize, x3: usize) -> !
     serial::write_labelled_hex("x2 = ", x2);
     serial::write_labelled_hex("x3 = ", x3);
 
-    if x2 != multiboot2::MAGIC {
-        serial::write_str("x2 does not match Multiboot2 magic\n");
+    if x0 != multiboot2::MAGIC {
+        serial::write_str("x0 does not match Multiboot2 magic\n");
         loop {
             core::hint::spin_loop();
         }
     }
-    serial::write_str("x2 matches Multiboot2 magic\n");
+    serial::write_str("x0 matches Multiboot2 magic\n");
 
     multiboot2::dump_words(x1, 4);
     multiboot2::dump_tags(x1);
