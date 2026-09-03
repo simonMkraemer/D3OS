@@ -182,6 +182,11 @@ pub fn parse_boot_info(bootinfo: usize) -> Option<BootInfo> {
                     parsed.efi_system_table = Some(read_u64(tag_addr + 8) as usize);
                 }
             }
+            20 => {
+                if tag_size >= 16 {
+                    parsed.efi_image_handle = Some(read_u64(tag_addr + 8) as usize);
+                }
+            }
             15 => {
                 parsed.acpi_rsdp = Some(tag_addr + 8);
             }

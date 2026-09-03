@@ -32,6 +32,7 @@ pub struct BootInfo {
     pub memory_map_entries: usize,
     pub acpi_rsdp: Option<usize>,
     pub efi_system_table: Option<usize>,
+    pub efi_image_handle: Option<usize>,
     pub efi_boot_services_not_exited: bool,
 }
 
@@ -43,6 +44,7 @@ impl BootInfo {
             memory_map_entries: 0,
             acpi_rsdp: None,
             efi_system_table: None,
+            efi_image_handle: None,
             efi_boot_services_not_exited: false,
         }
     }
@@ -87,6 +89,13 @@ pub fn dump(parsed: &BootInfo) {
     serial::write_str("  efi_system_table = ");
     match parsed.efi_system_table {
         Some(addr) => serial::write_hex_usize(addr),
+        None => serial::write_str("<none>"),
+    }
+    serial::write_str("\n");
+
+    serial::write_str("  efi_image_handle = ");
+    match parsed.efi_image_handle {
+        Some(handle) => serial::write_hex_usize(handle),
         None => serial::write_str("<none>"),
     }
     serial::write_str("\n");

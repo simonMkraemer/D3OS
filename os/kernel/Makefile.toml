@@ -14,14 +14,16 @@ CARGO_BUILD_OPTION = "--release"
 
 [env]
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
-CARGO_CFG_TARGET_FAMILY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/d3os_kernel.json"
+CARGO_CFG_TARGET_FAMILY = "${CARGO_MAKE_WORKING_DIRECTORY}/../../d3os_kernel.json"
 RUST_TARGET_PATH = "${CARGO_MAKE_WORKING_DIRECTORY}"
 SOURCE_DIRECTORY = "${CARGO_MAKE_WORKING_DIRECTORY}/src"
 LIBRARY_DIRECTORY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/os/library"
 LINKER_FILE = "${CARGO_MAKE_WORKING_DIRECTORY}/link.ld"
+AARCH64_LINKER_FILE = "${CARGO_MAKE_WORKING_DIRECTORY}/link/aarch64.ld"
 RUST_OBJECT = "${BUILD_DIRECTORY}/lib${CARGO_MAKE_PROJECT_NAME}.a"
 ASM_OBJECT = "${BUILD_DIRECTORY}/boot.o"
 ASM_OBJECT_AP = "${BUILD_DIRECTORY}/boot_ap.o"
+AARCH64_ASM_OBJECT = "${BUILD_DIRECTORY}/boot_aarch64.o"
 KERNEL = "${BOOTLOADER_DIRECTORY}/${CARGO_MAKE_PROJECT_NAME}.elf"
 
 [tasks.default]
@@ -49,10 +51,22 @@ args = [ "-f", "elf64", "-w+error=label-redef-late", "-o", "${ASM_OBJECT_AP}", "
 condition = { files_modified = { input = [ "${SOURCE_DIRECTORY}/boot_ap.asm" ], output = [ "${BUILD_DIRECTORY}/boot_ap.o" ] } }
 
 [tasks.link]
-command = "${LINKER}"
-args = [ "-n", "-T", "${LINKER_FILE}", "-o", "${KERNEL}", "${ASM_OBJECT}", "${ASM_OBJECT_AP}", "${RUST_OBJECT}" ]
-dependencies = [ "compile", "build-asm" , "build-asm-ap" ]
-condition = { files_modified = { input = [ "${BUILD_DIRECTORY}/lib${CARGO_MAKE_PROJECT_NAME}*", "${LINKER_FILE}" ], output = [ "${BOOTLOADER_DIRECTORY}/kernel.elf" ] } }
+script_runner = "bash"
+script = '''
+if [ "${KERNEL_ARCH:-}" = "x86_64" ]; then
+  cargo build -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -Z json-target-spec --target ${CARGO_CFG_TARGET_FAMILY} ${CARGO_BUILD_OPTION}
+  nasm -f elf64 -w+error=label-redef-late -o ${ASM_OBJECT} ${SOURCE_DIRECTORY}/boot.asm
+  nasm -f elf64 -w+error=label-redef-late -o ${ASM_OBJECT_AP} ${SOURCE_DIRECTORY}/boot_ap.asm
+  ${LINKER} -n -T ${LINKER_FILE} -o ${KERNEL} ${ASM_OBJECT} ${ASM_OBJECT_AP} ${RUST_OBJECT}
+elif [ "${KERNEL_ARCH:-}" = "aarch64" ]; then
+  mkdir -p ${BUILD_DIRECTORY}
+  clang --target=aarch64-none-elf -c -o ${AARCH64_ASM_OBJECT} ${SOURCE_DIRECTORY}/arch/aarch64/boot.S
+  rustc --target aarch64-unknown-none -C panic=abort -C linker=rust-lld -C link-arg=${AARCH64_ASM_OBJECT} -C link-arg=-T${AARCH64_LINKER_FILE} -C link-arg=-z -C link-arg=max-page-size=0x1000 -o ${KERNEL} ${SOURCE_DIRECTORY}/arch/aarch64/start.rs
+else
+  echo "KERNEL_ARCH must be set to x86_64 or aarch64"
+  exit 1
+fi
+'''
 
 [tasks.check]
 command = "cargo"

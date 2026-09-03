@@ -5,7 +5,7 @@
  * It exists as a staging point for later AArch64 startup work.
  */
 
-ENTRY(start_aarch64)
+ENTRY(aarch64_entry)
 
 PHDRS {
     text PT_LOAD;
