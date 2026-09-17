@@ -21,8 +21,13 @@ struct Region {
 }
 
 const PAGE_SIZE: usize = 0x1000;
+const MEBIBYTE: usize = 1024 * 1024;
 const MAX_MEMORY_REGIONS: usize = 64;
 const EFI_MEMORY_MAP_CAPACITY: usize = 64 * 1024;
+const EFI_MEMORY_DESCRIPTOR_MIN_SIZE: usize = 40;
+const EFI_CONVENTIONAL_MEMORY: u32 = 7;
+const EFI_INVALID_PARAMETER: usize = (1usize << (usize::BITS - 1)) | 2;
+const EXIT_BOOT_SERVICES_RETRIES: usize = 3;
 
 #[repr(C)]
 struct EfiTableHeader {
@@ -72,10 +77,26 @@ struct EfiMemoryMap([u8; EFI_MEMORY_MAP_CAPACITY]);
 
 static mut EFI_MEMORY_MAP: EfiMemoryMap = EfiMemoryMap([0; EFI_MEMORY_MAP_CAPACITY]);
 
-struct EarlyFrameAllocator {
-    regions: [Region; MAX_MEMORY_REGIONS],
-    count: usize,
-    current: usize,
+#[derive(Clone, Copy)]
+struct EfiMemoryMapInfo {
+    address: usize,
+    len: usize,
+    descriptor_size: usize,
+    descriptor_version: u32,
+}
+
+#[derive(Clone, Copy)]
+struct MemorySummary {
+    total_ram: usize,
+    free_ram: usize,
+}
+
+impl EfiMemoryMapInfo {
+    fn is_valid(self) -> bool {
+        self.address != 0
+            && self.descriptor_size >= EFI_MEMORY_DESCRIPTOR_MIN_SIZE
+            && self.len % self.descriptor_size == 0
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -86,6 +107,17 @@ struct FramebufferInfo {
     height: usize,
     bpp: usize,
 }
+
+
+// Tow-Boot lädt Kernel und Initrd                                                                                                                                                                                 LSP
+// -> Tow-Boot erstellt erste BootInfo inklusive älterer MemoryMap                                                                                                                                             LSPs are disabled
+// -> Tow-Boot springt nach D3OS
+// -> D3OS liest UEFI-Systemtabelle und Image-Handle aus BootInfo
+// -> D3OS ruft UEFI GetMemoryMap auf
+// -> D3OS erhält aktuelle Map + Map-Key
+// -> D3OS ruft ExitBootServices auf
+// -> D3OS nutzt die frische Map für eigene freie/reservierte Regionen
+// -> EarlyFrameAllocator gibt daraus physische 4-KiB-Frames aus
 
 #[unsafe(no_mangle)]
 pub extern "C" fn start_aarch64(x0: usize, x1: usize, x2: usize, x3: usize) -> ! {
@@ -103,20 +135,27 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, x2: usize, x3: usize) -> !
     }
     serial::write_str("x0 matches Multiboot2 magic\n");
 
-    multiboot2::dump_words(x1, 4);
-    multiboot2::dump_tags(x1);
-
     let Some(parsed) = multiboot2::parse_boot_info(x1) else {
         serial::write_str("failed to parse boot info\n");
-        loop {
-            core::hint::spin_loop();
-        }
+        halt();
     };
     bootinfo::dump(&parsed);
 
-    if parsed.efi_boot_services_not_exited {
-        exit_boot_services(&parsed);
+    if !parsed.has_required_uefi_handoff() {
+        serial::write_str("required UEFI handoff data is missing\n");
+        halt();
     }
+
+    multiboot2::dump_words(x1, 4);
+    multiboot2::dump_tags(x1);
+    let efi_memory_map = exit_boot_services(&parsed);
+    if !efi_memory_map.is_valid() {
+        serial::write_str("fresh EFI memory map is invalid\n");
+        halt();
+    }
+    dump_efi_memory_map(efi_memory_map);
+    let memory_summary = memory_summary(x1, efi_memory_map);
+    dump_memory_summary(memory_summary);
 
     match parse_framebuffer_tag(x1) {
         Some(framebuffer) => {
@@ -127,64 +166,108 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, x2: usize, x3: usize) -> !
             serial::write_labelled_hex("  height = ", framebuffer.height);
             serial::write_labelled_hex("  bpp = ", framebuffer.bpp);
             //paint_green(framebuffer);
-            print_framebuffer_status(framebuffer, x1);
+            print_framebuffer_status(framebuffer, x1, efi_memory_map, memory_summary);
         }
         None => serial::write_str("framebuffer tag missing or unsupported\n"),
     }
 
-    dump_memory_map(x1);
-    dump_reserved_regions(x1);
-    dump_allocator_regions(x1);
-    exercise_frame_allocator(x1);
+    dump_reserved_regions(x1, efi_memory_map);
+    dump_allocator_regions(x1, efi_memory_map);
+    //exercise_frame_allocator(x1, efi_memory_map);
 
     loop {
         core::hint::spin_loop();
     }
 }
 
-fn exit_boot_services(parsed: &bootinfo::BootInfo) {
-    let (Some(system_table), Some(image_handle)) =
-        (parsed.efi_system_table, parsed.efi_image_handle)
-    else {
-        serial::write_str("EFI handoff is incomplete\n");
-        return;
-    };
-
+fn exit_boot_services(parsed: &bootinfo::BootInfo) -> EfiMemoryMapInfo {
+    let system_table = parsed.efi_system_table.expect("validated UEFI system table");
+    let image_handle = parsed.efi_image_handle.expect("validated UEFI image handle");
     serial::write_str("exiting EFI Boot Services\n");
     match unsafe { exit_boot_services_raw(system_table, image_handle) } {
-        Ok(()) => serial::write_str("EFI Boot Services exited\n"),
-        Err(status) => serial::write_labelled_hex("ExitBootServices failed: ", status),
+        Ok(memory_map) => {
+            serial::write_str("EFI Boot Services exited\n");
+            memory_map
+        }
+        Err(status) => {
+            serial::write_labelled_hex("ExitBootServices failed: ", status);
+            halt();
+        }
     }
 }
 
-unsafe fn exit_boot_services_raw(system_table: usize, image_handle: usize) -> Result<(), usize> {
+unsafe fn exit_boot_services_raw(
+    system_table: usize, image_handle: usize,
+) -> Result<EfiMemoryMapInfo, usize> {
     let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
     let boot_services = unsafe { system_table.boot_services.as_ref() }.ok_or(usize::MAX)?;
-    let mut memory_map_size = EFI_MEMORY_MAP_CAPACITY;
-    let mut memory_map_key = 0usize;
-    let mut descriptor_size = 0usize;
-    let mut descriptor_version = 0u32;
     let memory_map = core::ptr::addr_of_mut!(EFI_MEMORY_MAP.0).cast::<u8>();
 
-    let status = unsafe {
-        (boot_services.get_memory_map)(
-            &mut memory_map_size,
-            memory_map,
-            &mut memory_map_key,
-            &mut descriptor_size,
-            &mut descriptor_version,
-        )
-    };
-    if status != 0 {
-        return Err(status);
+    for _ in 0..EXIT_BOOT_SERVICES_RETRIES {
+        let mut memory_map_size = EFI_MEMORY_MAP_CAPACITY;
+        let mut memory_map_key = 0usize;
+        let mut descriptor_size = 0usize;
+        let mut descriptor_version = 0u32;
+
+        let status = unsafe {
+            (boot_services.get_memory_map)(
+                &mut memory_map_size,
+                memory_map,
+                &mut memory_map_key,
+                &mut descriptor_size,
+                &mut descriptor_version,
+            )
+        };
+        if status != 0 {
+            return Err(status);
+        }
+
+        let status = unsafe { (boot_services.exit_boot_services)(image_handle, memory_map_key) };
+        if status == 0 {
+            return Ok(EfiMemoryMapInfo {
+                address: memory_map as usize,
+                len: memory_map_size,
+                descriptor_size,
+                descriptor_version,
+            });
+        }
+        if status != EFI_INVALID_PARAMETER {
+            return Err(status);
+        }
     }
 
-    let status = unsafe { (boot_services.exit_boot_services)(image_handle, memory_map_key) };
-    if status != 0 {
-        return Err(status);
-    }
+    Err(EFI_INVALID_PARAMETER)
+}
 
-    Ok(())
+fn dump_efi_memory_map(memory_map: EfiMemoryMapInfo) {
+    serial::write_str("fresh EFI memory map:\n");
+    serial::write_labelled_hex("  address = ", memory_map.address);
+    serial::write_labelled_hex("  size = ", memory_map.len);
+    serial::write_labelled_hex("  descriptor size = ", memory_map.descriptor_size);
+    serial::write_labelled_hex("  descriptor version = ", memory_map.descriptor_version as usize);
+    serial::write_labelled_hex("  descriptor count = ", memory_map.len / memory_map.descriptor_size);
+}
+
+fn dump_memory_summary(summary: MemorySummary) {
+    serial::write_str("memory summary:\n");
+    serial::write_str("  total firmware RAM = ");
+    serial::write_dec_usize(summary.total_ram / MEBIBYTE);
+    serial::write_str(" MiB\n");
+    serial::write_str("  allocator free RAM = ");
+    serial::write_dec_usize(summary.free_ram / MEBIBYTE);
+    serial::write_str(" MiB\n");
+    serial::write_str("  not allocator free = ");
+    serial::write_dec_usize(summary.total_ram.saturating_sub(summary.free_ram) / MEBIBYTE);
+    serial::write_str(" MiB\n");
+    serial::write_str("  allocator free frames = ");
+    serial::write_dec_usize(summary.free_ram / PAGE_SIZE);
+    serial::write_str("\n");
+}
+
+fn halt() -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 
@@ -274,71 +357,7 @@ fn parse_first_module_region(bootinfo: usize) -> Option<Region> {
     None
 }
 
-fn dump_memory_map(bootinfo: usize) {
-    if bootinfo == 0 || bootinfo & 7 != 0 {
-        serial::write_str("memory map unavailable\n");
-        return;
-    }
-
-    let total_size = read_u32(bootinfo) as usize;
-    let mut offset = 8usize;
-
-    while offset + 8 <= total_size {
-        let tag_addr = bootinfo + offset;
-        let tag_type = read_u32(tag_addr);
-        let tag_size = read_u32(tag_addr + 4) as usize;
-
-        if tag_size < 8 || offset + tag_size > total_size {
-            serial::write_str("invalid memory map tag\n");
-            return;
-        }
-
-        if tag_type == 6 && tag_size >= 16 {
-            let entry_size = read_u32(tag_addr + 8) as usize;
-            if entry_size < 24 {
-                serial::write_str("memory map entry size too small\n");
-                return;
-            }
-
-            serial::write_str("memory map entries:\n");
-            let mut entry_addr = tag_addr + 16;
-            let tag_end = tag_addr + tag_size;
-            while entry_addr + entry_size <= tag_end {
-                let start = read_u64(entry_addr) as usize;
-                let length = read_u64(entry_addr + 8) as usize;
-                let end = start.saturating_add(length);
-                let area_type = read_u32(entry_addr + 16);
-
-                serial::write_str("  [");
-                serial::write_hex_usize(start);
-                serial::write_str(", ");
-                serial::write_hex_usize(end);
-                serial::write_str(") type=");
-                serial::write_dec_usize(area_type as usize);
-                serial::write_str(" (");
-                serial::write_str(memory_area_type_name(area_type));
-                serial::write_str(")");
-                if area_type == 1 {
-                    serial::write_str(" usable");
-                }
-                serial::write_str("\n");
-
-                entry_addr += entry_size;
-            }
-            return;
-        }
-
-        if tag_type == 0 {
-            break;
-        }
-
-        offset = (offset + tag_size + 7) & !7;
-    }
-
-    serial::write_str("memory map tag missing\n");
-}
-
-fn dump_reserved_regions(bootinfo: usize) {
+fn dump_reserved_regions(bootinfo: usize, efi_memory_map: EfiMemoryMapInfo) {
     serial::write_str("reserved regions:\n");
 
     let kernel = Region {
@@ -352,6 +371,14 @@ fn dump_reserved_regions(bootinfo: usize) {
         end: bootinfo.saturating_add(read_u32(bootinfo) as usize),
     };
     dump_region("  bootinfo", bootinfo_region);
+
+    dump_region(
+        "  fresh EFI memory map",
+        Region {
+            start: efi_memory_map.address,
+            end: efi_memory_map.address.saturating_add(efi_memory_map.len),
+        },
+    );
 
     match parse_first_module_region(bootinfo) {
         Some(initrd) => dump_region("  initrd", initrd),
@@ -370,48 +397,33 @@ fn dump_reserved_regions(bootinfo: usize) {
     }
 }
 
-fn dump_allocator_regions(bootinfo: usize) {
-    let (usable, usable_count) = build_allocator_regions(bootinfo);
+fn dump_allocator_regions(bootinfo: usize, efi_memory_map: EfiMemoryMapInfo) {
+    let (usable, usable_count) = build_allocator_regions(bootinfo, efi_memory_map);
 
-    serial::write_str("allocator regions:\n");
+    serial::write_str("allocator regions from fresh EFI memory map:\n");
     for region in usable.iter().copied().take(usable_count) {
         dump_region("  free", region);
     }
 }
 
-fn exercise_frame_allocator(bootinfo: usize) {
-    let mut allocator = EarlyFrameAllocator::from_bootinfo(bootinfo);
-
-    serial::write_str("frame allocator test:\n");
-    for index in 0..3 {
-        serial::write_str("  frame ");
-        serial::write_dec_usize(index);
-        serial::write_str(" = ");
-        match allocator.alloc_frame() {
-            Some(frame) => serial::write_hex_usize(frame),
-            None => serial::write_str("<none>"),
-        }
-        serial::write_str("\n");
-    }
-
-    serial::write_str("  contiguous 4 pages = ");
-    match allocator.alloc_frames(4) {
-        Some(start) => serial::write_hex_usize(start),
-        None => serial::write_str("<none>"),
-    }
-    serial::write_str("\n");
-}
-
-fn build_allocator_regions(bootinfo: usize) -> ([Region; MAX_MEMORY_REGIONS], usize) {
+fn build_allocator_regions(
+    bootinfo: usize, efi_memory_map: EfiMemoryMapInfo,
+) -> ([Region; MAX_MEMORY_REGIONS], usize) {
     let mut usable = [Region { start: 0, end: 0 }; MAX_MEMORY_REGIONS];
-    let mut usable_count = collect_usable_regions(bootinfo, &mut usable);
+    let mut usable_count = collect_usable_efi_regions(efi_memory_map, &mut usable);
 
-    let mut reserved = [Region { start: 0, end: 0 }; 4];
+    let mut reserved = [Region { start: 0, end: 0 }; 5];
     let mut reserved_count = 0usize;
 
     reserved[reserved_count] = Region {
         start: core::ptr::addr_of!(___KERNEL_DATA_START__) as usize,
         end: core::ptr::addr_of!(___KERNEL_DATA_END__) as usize,
+    };
+    reserved_count += 1;
+
+    reserved[reserved_count] = Region {
+        start: efi_memory_map.address,
+        end: efi_memory_map.address.saturating_add(efi_memory_map.len),
     };
     reserved_count += 1;
 
@@ -441,61 +453,69 @@ fn build_allocator_regions(bootinfo: usize) -> ([Region; MAX_MEMORY_REGIONS], us
     (usable, usable_count)
 }
 
-fn collect_usable_regions(bootinfo: usize, out: &mut [Region; MAX_MEMORY_REGIONS]) -> usize {
-    if bootinfo == 0 || bootinfo & 7 != 0 {
+fn memory_summary(bootinfo: usize, efi_memory_map: EfiMemoryMapInfo) -> MemorySummary {
+    let (regions, count) = build_allocator_regions(bootinfo, efi_memory_map);
+    let free_ram = regions
+        .iter()
+        .copied()
+        .take(count)
+        .fold(0usize, |total, region| total.saturating_add(region.end - region.start));
+
+    let mut total_ram = 0usize;
+    let descriptor_count = efi_memory_map.len / efi_memory_map.descriptor_size;
+    for index in 0..descriptor_count {
+        let descriptor = efi_memory_map.address + index * efi_memory_map.descriptor_size;
+        let memory_type = read_u32(descriptor);
+        if !(1..=10).contains(&memory_type) {
+            continue;
+        }
+
+        let page_count = read_u64(descriptor + 24) as usize;
+        if let Some(bytes) = page_count.checked_mul(PAGE_SIZE) {
+            total_ram = total_ram.saturating_add(bytes);
+        }
+    }
+
+    MemorySummary { total_ram, free_ram }
+}
+
+fn collect_usable_efi_regions(
+    efi_memory_map: EfiMemoryMapInfo, out: &mut [Region; MAX_MEMORY_REGIONS],
+) -> usize {
+    if !efi_memory_map.is_valid() {
         return 0;
     }
 
-    let total_size = read_u32(bootinfo) as usize;
-    let mut offset = 8usize;
-
-    while offset + 8 <= total_size {
-        let tag_addr = bootinfo + offset;
-        let tag_type = read_u32(tag_addr);
-        let tag_size = read_u32(tag_addr + 4) as usize;
-
-        if tag_size < 8 || offset + tag_size > total_size {
-            return 0;
-        }
-
-        if tag_type == 6 && tag_size >= 16 {
-            let entry_size = read_u32(tag_addr + 8) as usize;
-            if entry_size < 24 {
-                return 0;
-            }
-
-            let mut count = 0usize;
-            let mut entry_addr = tag_addr + 16;
-            let tag_end = tag_addr + tag_size;
-            while entry_addr + entry_size <= tag_end && count < out.len() {
-                let start = read_u64(entry_addr) as usize;
-                let length = read_u64(entry_addr + 8) as usize;
-                let area_type = read_u32(entry_addr + 16);
-
-                if area_type == 1 && length != 0 {
-                    let region = Region {
-                        start: align_up(start, PAGE_SIZE),
-                        end: align_down(start.saturating_add(length), PAGE_SIZE),
-                    };
-                    if region.end > region.start {
-                        out[count] = region;
-                        count += 1;
-                    }
-                }
-
-                entry_addr += entry_size;
-            }
-            return count;
-        }
-
-        if tag_type == 0 {
+    let mut count = 0usize;
+    let descriptor_count = efi_memory_map.len / efi_memory_map.descriptor_size;
+    for index in 0..descriptor_count {
+        if count == out.len() {
             break;
         }
 
-        offset = (offset + tag_size + 7) & !7;
+        let descriptor = efi_memory_map.address + index * efi_memory_map.descriptor_size;
+        let memory_type = read_u32(descriptor);
+        if memory_type != EFI_CONVENTIONAL_MEMORY {
+            continue;
+        }
+
+        let start = read_u64(descriptor + 8) as usize;
+        let page_count = read_u64(descriptor + 24) as usize;
+        let Some(length) = page_count.checked_mul(PAGE_SIZE) else {
+            continue;
+        };
+
+        let region = Region {
+            start: align_up(start, PAGE_SIZE),
+            end: align_down(start.saturating_add(length), PAGE_SIZE),
+        };
+        if region.end > region.start {
+            out[count] = region;
+            count += 1;
+        }
     }
 
-    0
+    count
 }
 
 fn subtract_reserved_regions(regions: &mut [Region; MAX_MEMORY_REGIONS], count: usize, reserved: Region) -> usize {
@@ -547,47 +567,6 @@ fn subtract_reserved_regions(regions: &mut [Region; MAX_MEMORY_REGIONS], count: 
     next_count
 }
 
-impl EarlyFrameAllocator {
-    fn from_bootinfo(bootinfo: usize) -> Self {
-        let (regions, count) = build_allocator_regions(bootinfo);
-        Self {
-            regions,
-            count,
-            current: 0,
-        }
-    }
-
-    fn alloc_frame(&mut self) -> Option<usize> {
-        while self.current < self.count {
-            let region = &mut self.regions[self.current];
-            if region.start + PAGE_SIZE <= region.end {
-                let frame = region.start;
-                region.start += PAGE_SIZE;
-                return Some(frame);
-            }
-            self.current += 1;
-        }
-
-        None
-    }
-
-    fn alloc_frames(&mut self, frame_count: usize) -> Option<usize> {
-        let bytes = frame_count.checked_mul(PAGE_SIZE)?;
-
-        while self.current < self.count {
-            let region = &mut self.regions[self.current];
-            if region.start + bytes <= region.end {
-                let start = region.start;
-                region.start += bytes;
-                return Some(start);
-            }
-            self.current += 1;
-        }
-
-        None
-    }
-}
-
 fn align_up(value: usize, align: usize) -> usize {
     if align == 0 {
         return value;
@@ -614,18 +593,10 @@ fn dump_region(label: &str, region: Region) {
     serial::write_str(")\n");
 }
 
-fn memory_area_type_name(area_type: u32) -> &'static str {
-    match area_type {
-        1 => "available",
-        2 => "reserved",
-        3 => "acpi",
-        4 => "hibernate",
-        5 => "defective",
-        _ => "unknown",
-    }
-}
-
-fn print_framebuffer_status(framebuffer: FramebufferInfo, bootinfo: usize) {
+fn print_framebuffer_status(
+    framebuffer: FramebufferInfo, bootinfo: usize, efi_memory_map: EfiMemoryMapInfo,
+    memory_summary: MemorySummary,
+) {
     let Some(console) = Framebuffer::new(
         framebuffer.address,
         framebuffer.pitch,
@@ -640,14 +611,16 @@ fn print_framebuffer_status(framebuffer: FramebufferInfo, bootinfo: usize) {
     console.clear(0x00, 0x40, 0x00);
     console.write_line(0, "ARM BOOT OK");
     console.write_line(1, "FRAMEBUFFER OK");
-    console.write_line(2, "BOOTINFO");
-    console.write_hex_usize(8, 8 + 3 * 10, bootinfo);
+    console.write_line(2, "RAM TOTAL MIB");
+    console.write_dec_usize(8, console.line_y(3), memory_summary.total_ram / MEBIBYTE);
+    console.write_line(4, "RAM FREE MIB");
+    console.write_dec_usize(8, console.line_y(5), memory_summary.free_ram / MEBIBYTE);
 
-    let (regions, count) = build_allocator_regions(bootinfo);
-    console.write_line(4, "ALLOC REGIONS");
+    let (regions, count) = build_allocator_regions(bootinfo, efi_memory_map);
+    console.write_line(6, "ALLOC REGIONS");
     let shown = core::cmp::min(count, 3);
     for (index, region) in regions.iter().take(shown).enumerate() {
-        let y = 8 + (5 + index) * 10;
+        let y = console.line_y(7 + index);
         console.write_hex_usize(8, y, region.start);
         console.write_text(8 + 19 * 6, y, "-");
         console.write_hex_usize(8 + 21 * 6, y, region.end);

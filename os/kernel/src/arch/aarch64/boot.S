@@ -1,8 +1,12 @@
 .set MULTIBOOT2_HEADER_MAGIC, 0xe85250d6
 .set MULTIBOOT2_HEADER_ARCHITECTURE, 0
 .set MULTIBOOT2_TAG_ENTRY_ADDRESS, 3
+.set MULTIBOOT2_TAG_FRAMEBUFFER, 5
 .set MULTIBOOT2_TAG_EFI_BOOT_SERVICES, 7
 .set MULTIBOOT2_TAG_END, 0
+.set FRAMEBUFFER_WIDTH, 1024
+.set FRAMEBUFFER_HEIGHT, 768
+.set FRAMEBUFFER_BPP, 32
 
 .extern start_aarch64
 
@@ -39,6 +43,15 @@ multiboot2_header:
     .short MULTIBOOT2_TAG_EFI_BOOT_SERVICES
     .short 0
     .long 8
+
+    // Ask Tow-Boot to select this GOP framebuffer mode before handoff.
+    .balign 8
+    .short MULTIBOOT2_TAG_FRAMEBUFFER
+    .short 0
+    .long 20
+    .long FRAMEBUFFER_WIDTH
+    .long FRAMEBUFFER_HEIGHT
+    .long FRAMEBUFFER_BPP
 
     .balign 8
     .short MULTIBOOT2_TAG_END

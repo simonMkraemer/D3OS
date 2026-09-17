@@ -29,7 +29,7 @@ impl StaticStr {
 pub struct BootInfo {
     pub bootloader_name: StaticStr,
     pub first_module: Option<BootModule>,
-    pub memory_map_entries: usize,
+    pub has_end_tag: bool,
     pub acpi_rsdp: Option<usize>,
     pub efi_system_table: Option<usize>,
     pub efi_image_handle: Option<usize>,
@@ -41,12 +41,20 @@ impl BootInfo {
         Self {
             bootloader_name: StaticStr::empty(),
             first_module: None,
-            memory_map_entries: 0,
+            has_end_tag: false,
             acpi_rsdp: None,
             efi_system_table: None,
             efi_image_handle: None,
             efi_boot_services_not_exited: false,
         }
+    }
+
+    pub fn has_required_uefi_handoff(&self) -> bool {
+        self.has_end_tag
+            && self.first_module.is_some()
+            && self.efi_system_table.is_some()
+            && self.efi_image_handle.is_some()
+            && self.efi_boot_services_not_exited
     }
 }
 
@@ -73,10 +81,6 @@ pub fn dump(parsed: &BootInfo) {
     serial::write_str("parsed boot info:\n");
     serial::write_str("  bootloader = ");
     write_static_str(parsed.bootloader_name);
-    serial::write_str("\n");
-
-    serial::write_str("  memory_map_entries = ");
-    serial::write_dec_usize(parsed.memory_map_entries);
     serial::write_str("\n");
 
     serial::write_str("  acpi_rsdp = ");

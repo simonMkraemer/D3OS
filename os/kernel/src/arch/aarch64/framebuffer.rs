@@ -36,8 +36,11 @@ impl Framebuffer {
     }
 
     pub fn write_line(&self, line: usize, text: &str) {
-        let y = MARGIN_Y + line * LINE_ADVANCE;
-        self.write_text(MARGIN_X, y, text);
+        self.write_text(MARGIN_X, self.line_y(line), text);
+    }
+
+    pub fn line_y(&self, line: usize) -> usize {
+        MARGIN_Y + line * LINE_ADVANCE
     }
 
     pub fn write_text(&self, x: usize, y: usize, text: &str) {
@@ -72,6 +75,28 @@ impl Framebuffer {
         self.write_text(x, y, unsafe { core::str::from_utf8_unchecked(&buffer[..2 + nybbles]) });
     }
 
+    pub fn write_dec_usize(&self, x: usize, y: usize, mut value: usize) {
+        let mut digits = [b'0'; 20];
+        let mut len = 0;
+
+        if value == 0 {
+            self.write_text(x, y, "0");
+            return;
+        }
+
+        while value != 0 {
+            digits[len] = b'0' + (value % 10) as u8;
+            value /= 10;
+            len += 1;
+        }
+
+        let mut buffer = [b'0'; 20];
+        for index in 0..len {
+            buffer[index] = digits[len - 1 - index];
+        }
+        self.write_text(x, y, unsafe { core::str::from_utf8_unchecked(&buffer[..len]) });
+    }
+
     fn draw_char(&self, x: usize, y: usize, byte: u8) {
         let glyph = glyph_rows(byte);
 
@@ -83,12 +108,10 @@ impl Framebuffer {
 
                 let px = x + col;
                 let py = y + row_index;
-                if px >= self.width || py >= self.height {
-                    continue;
+                if px < self.width && py < self.height {
+                    let offset = self.address + py * self.pitch + px * 4;
+                    self.write_pixel(offset, 0xff, 0xff, 0xff);
                 }
-
-                let offset = self.address + py * self.pitch + px * 4;
-                self.write_pixel(offset, 0xff, 0xff, 0xff);
             }
         }
     }

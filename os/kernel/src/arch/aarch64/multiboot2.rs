@@ -156,7 +156,11 @@ pub fn parse_boot_info(bootinfo: usize) -> Option<BootInfo> {
         }
 
         match tag_type {
-            0 => break,
+            0 if tag_size == 8 => {
+                parsed.has_end_tag = true;
+                break;
+            }
+            0 => return None,
             2 => {
                 parsed.bootloader_name = parse_static_str(tag_addr, tag_size);
             }
@@ -167,14 +171,6 @@ pub fn parse_boot_info(bootinfo: usize) -> Option<BootInfo> {
                         end: read_u32(tag_addr + 12) as usize,
                         name: parse_static_str(tag_addr + 8, tag_size - 8),
                     });
-                }
-            }
-            6 => {
-                if tag_size >= 16 {
-                    let entry_size = read_u32(tag_addr + 8) as usize;
-                    if entry_size != 0 {
-                        parsed.memory_map_entries = (tag_size - 16) / entry_size;
-                    }
                 }
             }
             12 => {
