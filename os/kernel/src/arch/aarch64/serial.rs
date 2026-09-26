@@ -56,23 +56,3 @@ pub fn write_dec_usize(mut value: usize) {
         write_byte(digits[len]);
     }
 }
-
-pub fn write_bytes(bytes: &[u8]) {
-    for &byte in bytes {
-        write_byte(byte);
-    }
-}
-
-pub fn write_cstr(ptr: *const u8, len: usize) {
-    for index in 0..len {
-        let byte = unsafe { core::ptr::read_volatile(ptr.add(index)) };
-        if byte == 0 {
-            break;
-        }
-        if (0x20..=0x7e).contains(&byte) {
-            write_byte(byte);
-        } else {
-            write_byte(b'.');
-        }
-    }
-}

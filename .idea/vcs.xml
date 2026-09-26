@@ -3,5 +3,6 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/os/application/doom/doomgeneric" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tools/towboot" vcs="Git" />
   </component>
 </project>

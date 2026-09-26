@@ -1,8 +1,8 @@
 /*
- * Future AArch64-specific linker script.
+ * Active AArch64 linker script.
  *
- * This is not wired into the build yet.
- * It exists as a staging point for later AArch64 startup work.
+ * os/kernel/Makefile.toml invokes rust-lld with this script via -T when
+ * building the AArch64 kernel image.
  */
 
 ENTRY(aarch64_entry)

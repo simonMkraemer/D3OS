@@ -18,12 +18,7 @@ impl Framebuffer {
             return None;
         }
 
-        Some(Self {
-            address,
-            pitch,
-            width,
-            height,
-        })
+        Some(Self { address, pitch, width, height })
     }
 
     pub fn clear(&self, r: u8, g: u8, b: u8) {
@@ -44,6 +39,10 @@ impl Framebuffer {
     }
 
     pub fn write_text(&self, x: usize, y: usize, text: &str) {
+        self.write_text_colored(x, y, text, 0xff, 0xff, 0xff);
+    }
+
+    pub fn write_text_colored(&self, x: usize, y: usize, text: &str, r: u8, g: u8, b: u8) {
         let mut cursor_x = x;
 
         for byte in text.bytes() {
@@ -51,7 +50,7 @@ impl Framebuffer {
                 break;
             }
 
-            self.draw_char(cursor_x, y, byte);
+            self.draw_char(cursor_x, y, byte, r, g, b);
             cursor_x += GLYPH_ADVANCE;
             if cursor_x + GLYPH_WIDTH >= self.width {
                 break;
@@ -97,7 +96,7 @@ impl Framebuffer {
         self.write_text(x, y, unsafe { core::str::from_utf8_unchecked(&buffer[..len]) });
     }
 
-    fn draw_char(&self, x: usize, y: usize, byte: u8) {
+    fn draw_char(&self, x: usize, y: usize, byte: u8, r: u8, g: u8, b: u8) {
         let glyph = glyph_rows(byte);
 
         for (row_index, row) in glyph.iter().enumerate() {
@@ -110,7 +109,7 @@ impl Framebuffer {
                 let py = y + row_index;
                 if px < self.width && py < self.height {
                     let offset = self.address + py * self.pitch + px * 4;
-                    self.write_pixel(offset, 0xff, 0xff, 0xff);
+                    self.write_pixel(offset, r, g, b);
                 }
             }
         }
@@ -177,6 +176,7 @@ fn glyph_rows(byte: u8) -> [u8; GLYPH_HEIGHT] {
         b',' => [0x00, 0x00, 0x00, 0x00, 0x06, 0x04, 0x08],
         b'.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C],
         b'/' => [0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10],
+        b'\\' => [0x10, 0x08, 0x08, 0x04, 0x02, 0x02, 0x01],
         b'_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F],
         _ => [0x1F, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
     }
