@@ -20,6 +20,15 @@
             "problemMatcher": []
         },
         {
+            "label": "build-arm",
+            "group": "build",
+            "type": "shell",
+            "isBackground": false,
+            "command": "cargo",
+            "args": [ "make", "--no-workspace", "--profile", "development", "image-arm" ],
+            "problemMatcher": []
+        },
+        {
             "label": "qemu",
             "type": "shell",
             "isBackground": false,
@@ -27,6 +36,15 @@
             "args": [ "make", "--no-workspace", "--profile", "development", "qemu" ],
             "problemMatcher": [],
             "dependsOn": "build"
+        },
+        {
+            "label": "qemu-arm",
+            "type": "shell",
+            "isBackground": false,
+            "command": "cargo",
+            "args": [ "make", "--no-workspace", "--profile", "development", "qemu-arm" ],
+            "problemMatcher": [],
+            "dependsOn": "build-arm"
         },
         {
             "label": "qemu-wsl",

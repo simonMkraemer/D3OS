@@ -284,8 +284,8 @@ condition = { files_modified = { input = [ "${BOOTLOADER_DIRECTORY}/initrd.tar",
 
 [tasks.towbootctl]
 cwd = "${TOWBOOT_DIRECTORY}"
-command = "rustup"
-args = [ "run", "nightly", "cargo", "build", "-p", "towbootctl", "--features", "binary" ]
+command = "cargo"
+args = [ "build", "-p", "towbootctl", "--features", "binary" ]
 condition = { files_modified = { input = [ "${TOWBOOT_DIRECTORY}/Cargo.toml", "${TOWBOOT_DIRECTORY}/Cargo.lock", "${TOWBOOT_DIRECTORY}/rust-toolchain.toml", "${TOWBOOT_DIRECTORY}/towboot/**/*.rs", "${TOWBOOT_DIRECTORY}/towboot_aa64/**/*.rs", "${TOWBOOT_DIRECTORY}/towboot_aa64/Cargo.toml", "${TOWBOOT_DIRECTORY}/towbootctl/**/*.rs", "${TOWBOOT_DIRECTORY}/towbootctl/Cargo.toml" ], output = [ "${TOWBOOTCTL}" ] } }
 
 # Cleanup tasks

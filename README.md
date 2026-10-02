@@ -21,6 +21,19 @@ For building D3OS, the following packages for Debian/Ubuntu based systems (or th
 apt install rustup build-essential nasm dosfstools fdisk wget qemu-system-x86
 ```
 
+The AArch64 target additionally needs:
+```bash
+apt install qemu-system-arm clang libssl-dev
+```
+
+`clang` assembles the AArch64 boot stub, `qemu-system-arm` provides the `virt` machine
+used for `qemu-arm`, and `libssl-dev` is required by `libgit2-sys`, which `towbootctl`
+pulls in transitively through its `built` build-dependency.
+
+`qemu-efi-aarch64` (providing `/usr/share/AAVMF/AAVMF_{CODE,VARS}.fd`) is required for the
+AArch64 firmware. It is pulled in by `qemu-system-arm` on current Ubuntu releases; on
+other distributions install it separately.
+
 This has been tested on Ubuntu 24.04.
 
 For macOS, the same can be achieved with:
@@ -33,6 +46,8 @@ brew link --force rustup
 This has been tested on macOS 14.
 
 [rustup](https://rustup.rs/) will download a _rust nightly_ toolchain on the first compile.
+The required targets, including `aarch64-unknown-none` and the UEFI targets used by
+`towboot`, are declared in `rust-toolchain.toml` and are installed automatically.
 
 To run the build, the commands _cargo-make_ and _cargo-license_ are required. Install them with:
 ```bash
@@ -57,6 +72,32 @@ To only build the bootable image _d3os.img_, run:
 ```bash
 cargo make --no-workspace image
 ```
+
+## AArch64
+
+The AArch64 port boots through UEFI: AAVMF loads tow-boot, which loads the kernel image
+and the initrd, then hands control over while UEFI Boot Services are still active. The
+kernel exits Boot Services itself. See [docs/aarch64-boot-abi.md](docs/aarch64-boot-abi.md)
+for the register contract and the boot-information block.
+
+The default task (`cargo make --no-workspace`) is the x86_64 machine. To build and run the
+AArch64 machine, invoke the `qemu-arm` task explicitly:
+```bash
+cargo make --no-workspace qemu-arm
+```
+
+To only build the AArch64 bootable image _d3os-arm.img_, run:
+```bash
+cargo make --no-workspace image-arm
+```
+
+The kernel is currently a first-boot milestone: it acquires the UEFI memory map, exits
+Boot Services, reserves the kernel image, initrd and framebuffer, and reports the
+resulting free memory. Its output goes to the framebuffer provided by the UEFI GOP, so
+run `qemu-arm` with a display to see it; the serial port only carries the boot summary.
+
+Note that `qemu-arm` copies `/usr/share/AAVMF/AAVMF_VARS.fd` to `AAVMF_VARS.fd` on first
+use. Delete that file to reset the firmware to a clean state.
 
 ## Debugging 
 

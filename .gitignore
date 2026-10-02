@@ -127,8 +127,10 @@ target/
 
 os/application/about/src/rust-dependencies.json
 d3os.img
+d3os-arm.img
 hdd.img
 RELEASEX64_OVMF.fd
+AAVMF_VARS.fd
 loader/kernel.elf
 loader/initrd.tar
 loader/initrd/bin
