@@ -307,23 +307,6 @@ fn build_aarch64_boot_info(bootinfo_address: usize, handoff: HandoffInfo, efi_me
     }
 }
 
-fn report_boot_summary(boot_info: &Aarch64BootInfo) {
-    serial::write_str("AArch64 boot: ");
-    serial::write_dec_usize(boot_info.memory_summary.free_ram / PAGE_SIZE);
-    serial::write_str(" free frames, ");
-    serial::write_dec_usize(boot_info.retained_region_count());
-    serial::write_str(" retained regions, ");
-    serial::write_dec_usize(boot_info.efi_memory_map.descriptor_count());
-    serial::write_str(" EFI descriptors (v");
-    serial::write_dec_usize(boot_info.efi_memory_map.descriptor_version as usize);
-    serial::write_str(")");
-    if boot_info.acpi_rsdp.is_some() {
-        serial::write_str(", ACPI\n");
-    } else {
-        serial::write_str("\n");
-    }
-}
-
 fn collect_usable_efi_regions(efi_memory_map: EfiMemoryMapInfo, out: &mut [Region; MAX_MEMORY_REGIONS]) -> usize {
     if !efi_memory_map.is_valid() {
         return 0;
@@ -425,6 +408,23 @@ fn align_down(value: usize, align: usize) -> usize {
     }
 
     value & !(align - 1)
+}
+
+fn report_boot_summary(boot_info: &Aarch64BootInfo) {
+    serial::write_str("AArch64 boot: ");
+    serial::write_dec_usize(boot_info.memory_summary.free_ram / PAGE_SIZE);
+    serial::write_str(" free frames, ");
+    serial::write_dec_usize(boot_info.retained_region_count());
+    serial::write_str(" retained regions, ");
+    serial::write_dec_usize(boot_info.efi_memory_map.descriptor_count());
+    serial::write_str(" EFI descriptors (v");
+    serial::write_dec_usize(boot_info.efi_memory_map.descriptor_version as usize);
+    serial::write_str(")");
+    if boot_info.acpi_rsdp.is_some() {
+        serial::write_str(", ACPI\n");
+    } else {
+        serial::write_str("\n");
+    }
 }
 
 fn print_framebuffer_status(framebuffer: FramebufferInfo, boot_info: &Aarch64BootInfo) {

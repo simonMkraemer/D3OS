@@ -96,6 +96,14 @@ Boot Services, reserves the kernel image, initrd and framebuffer, and reports th
 resulting free memory. Its output goes to the framebuffer provided by the UEFI GOP, so
 run `qemu-arm` with a display to see it; the serial port only carries the boot summary.
 
+To start the AArch64 machine paused for a debugger, run:
+```bash
+cargo make --no-workspace debug-arm
+```
+Attach `gdb-multiarch` or a RustRover GDB Remote Debug configuration to `localhost:1234`
+with `loader/kernel.elf` as the symbol file. Set the GDB architecture to `aarch64` and
+break on `start_aarch64` before continuing.
+
 Note that `qemu-arm` copies `/usr/share/AAVMF/AAVMF_VARS.fd` to `AAVMF_VARS.fd` on first
 use. Delete that file to reset the firmware to a clean state.
 
