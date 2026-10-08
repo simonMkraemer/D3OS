@@ -56,6 +56,29 @@
             "dependsOn": "build"
         },
         {
+            "label": "qemu-gdb-arm",
+            "type": "shell",
+            "isBackground": true,
+            "command": "cargo",
+            "args": [ "make", "--no-workspace", "--profile", "development", "debug-arm" ],
+            "problemMatcher": [
+                {
+                    "pattern": {
+                        "regexp": "^(.*):(\\d+):(\\d+): (.*)$",
+                        "file": 1,
+                        "line": 2,
+                        "column": 3,
+                        "message": 4
+                    },
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": ".",
+                        "endsPattern": "Ready to debug ARM"
+                    }
+                }
+            ]
+        },
+        {
             "label": "qemu-gdb",
             "type": "shell",
             "isBackground": true,

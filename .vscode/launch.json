@@ -1,6 +1,31 @@
 {
     "version": "0.2.0",
     "configurations": [
+        {
+            "name": "qemu-gdb-arm",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/loader/kernel.elf",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "gdb-multiarch",
+            "linux": {
+                "miDebuggerPath": "gdb-multiarch"
+            },
+            "osx": {
+                "miDebuggerPath": "gdb"
+            },
+            "miDebuggerServerAddress": "localhost:1234",
+            "stopAtEntry": false,
+            "setupCommands": [
+                {"text": "-enable-pretty-printing"}
+            ],
+            "postRemoteConnectCommands": [
+                {"text": "hbreak start_aarch64"}
+            ],
+            "launchCompleteCommand": "exec-continue",
+            "preLaunchTask": "qemu-gdb-arm"
+        },
         
         {
             "name": "qemu-gdb",
