@@ -23,6 +23,7 @@ struct Region {
 const PAGE_SIZE: usize = 0x1000;
 const MEBIBYTE: usize = 1024 * 1024;
 const MAX_MEMORY_REGIONS: usize = 64;
+//If not allocated like this, we use AllocPool and this changes the MAP_KEY!
 const EFI_MEMORY_MAP_CAPACITY: usize = 64 * 1024;
 const EFI_MEMORY_DESCRIPTOR_MIN_SIZE: usize = 40;
 const EFI_CONVENTIONAL_MEMORY: u32 = 7;
@@ -153,6 +154,15 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
             print_framebuffer_status(framebuffer, &boot_info);
         }
         None => serial::write_str("framebuffer tag missing\n"),
+    }
+
+    //start of exception level check
+    unsafe {
+        let mut value: usize;
+        core::arch::asm!("mrs {}, CurrentEL", out(reg) value);
+        serial::write_str("CurrentEl: ");
+        serial::write_hex_usize(value);
+        serial::write_str("\n");
     }
 
     loop {
