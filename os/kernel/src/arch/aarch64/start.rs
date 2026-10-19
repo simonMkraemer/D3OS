@@ -12,6 +12,9 @@ use crate::framebuffer::Framebuffer;
 use crate::multiboot2::{FramebufferInfo, HandoffInfo};
 use core::panic::PanicInfo;
 
+// Entry point, multiboot2 header and exception vectors
+core::arch::global_asm!(include_str!("boot.S"), options(raw));
+
 unsafe extern "C" {
     static ___KERNEL_DATA_START__: u8;
     static ___KERNEL_DATA_END__: u8;
@@ -205,7 +208,8 @@ fn exit_boot_services(handoff: &HandoffInfo) -> EfiMemoryMapInfo {
 unsafe fn exit_boot_services_raw(system_table: usize, image_handle: usize) -> Result<EfiMemoryMapInfo, usize> {
     let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
     let boot_services = unsafe { system_table.boot_services.as_ref() }.ok_or(usize::MAX)?;
-    let memory_map = core::ptr::addr_of_mut!(EFI_MEMORY_MAP.0).cast::<u8>();
+    // Only a raw pointer is created
+    let memory_map = unsafe { core::ptr::addr_of_mut!(EFI_MEMORY_MAP.0) }.cast::<u8>();
 
     for _ in 0..EXIT_BOOT_SERVICES_RETRIES {
         let mut memory_map_size = EFI_MEMORY_MAP_CAPACITY;

@@ -1,0 +1,26 @@
+# Early AArch64 kernel. These sources form their own small crate for now,
+# because os/kernel (lib.rs) is still x86_64-only. The empty [workspace] makes it
+# its own workspace, so the D3OS workspace build does not compile it for the host.
+# Target and target directory are set in .cargo/config.toml.
+
+[package]
+name = "kernel_aarch64"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "kernel_aarch64"
+path = "start.rs"
+test = false
+bench = false
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
