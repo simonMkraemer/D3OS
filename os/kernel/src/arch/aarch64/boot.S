@@ -35,6 +35,99 @@ aarch64_entry:
     // establish them before relying on them when adding exception/MMU support.
     b start_aarch64
 
+// Exception vector table installed in VBAR_EL1 by exception.rs after
+// ExitBootServices. 4 sources x 4 types, each entry 0x80 bytes, base aligned
+// to 2 KiB. An entry has only 32 instructions, so it saves x0/x1, stores its
+// index in x0, and continues in exception_common.
+.set TRAP_FRAME_SIZE, 272   // x0-x30, ELR, SPSR, padding to 16 bytes
+.set TRAP_FRAME_X30, 240
+.set TRAP_FRAME_ELR, 248
+
+.macro VECTOR_ENTRY index
+    .balign 0x80
+    sub sp, sp, #TRAP_FRAME_SIZE
+    stp x0, x1, [sp, #0]
+    mov x0, #\index
+    b exception_common
+.endm
+
+.section .text.exception_vectors, "ax"
+.balign 0x800
+.global exception_vector_table
+exception_vector_table:
+    // current EL with SP_EL0
+    VECTOR_ENTRY 0
+    VECTOR_ENTRY 1
+    VECTOR_ENTRY 2
+    VECTOR_ENTRY 3
+    // current EL with SP_ELx
+    VECTOR_ENTRY 4
+    VECTOR_ENTRY 5
+    VECTOR_ENTRY 6
+    VECTOR_ENTRY 7
+    // lower EL in AArch64
+    VECTOR_ENTRY 8
+    VECTOR_ENTRY 9
+    VECTOR_ENTRY 10
+    VECTOR_ENTRY 11
+    // lower EL in AArch32
+    VECTOR_ENTRY 12
+    VECTOR_ENTRY 13
+    VECTOR_ENTRY 14
+    VECTOR_ENTRY 15
+
+// From: https://jcomes.org/aarch64-os-interrupt-handling-i    
+// Save the remaining registers into the TrapFrame, call
+// handle_exception(frame, index), restore everything and return with eret.
+// The layout must match TrapFrame in exception.rs.
+// TODO: save FP/SIMD registers before handling asynchronous exceptions (IRQ).
+exception_common:
+    stp x2, x3, [sp, #16]
+    stp x4, x5, [sp, #32]
+    stp x6, x7, [sp, #48]
+    stp x8, x9, [sp, #64]
+    stp x10, x11, [sp, #80]
+    stp x12, x13, [sp, #96]
+    stp x14, x15, [sp, #112]
+    stp x16, x17, [sp, #128]
+    stp x18, x19, [sp, #144]
+    stp x20, x21, [sp, #160]
+    stp x22, x23, [sp, #176]
+    stp x24, x25, [sp, #192]
+    stp x26, x27, [sp, #208]
+    stp x28, x29, [sp, #224]
+    str x30, [sp, #TRAP_FRAME_X30]
+    mrs x2, elr_el1
+    mrs x3, spsr_el1
+    stp x2, x3, [sp, #TRAP_FRAME_ELR]
+
+    mov x1, x0              // second argument: vector entry index
+    mov x0, sp              // first argument: &mut TrapFrame
+    bl handle_exception
+
+    // The handler may change ELR (e.g. skip a BRK), so restore from the frame.
+    ldp x2, x3, [sp, #TRAP_FRAME_ELR]
+    msr elr_el1, x2
+    msr spsr_el1, x3
+    ldr x30, [sp, #TRAP_FRAME_X30]
+    ldp x28, x29, [sp, #224]
+    ldp x26, x27, [sp, #208]
+    ldp x24, x25, [sp, #192]
+    ldp x22, x23, [sp, #176]
+    ldp x20, x21, [sp, #160]
+    ldp x18, x19, [sp, #144]
+    ldp x16, x17, [sp, #128]
+    ldp x14, x15, [sp, #112]
+    ldp x12, x13, [sp, #96]
+    ldp x10, x11, [sp, #80]
+    ldp x8, x9, [sp, #64]
+    ldp x6, x7, [sp, #48]
+    ldp x4, x5, [sp, #32]
+    ldp x2, x3, [sp, #16]
+    ldp x0, x1, [sp, #0]
+    add sp, sp, #TRAP_FRAME_SIZE
+    eret
+
 // Bootstrap stack. %nobits reserves space in the loaded image without storing
 // 16 KiB of zero bytes in the kernel file.
 .section .bss.boot_stack, "aw", %nobits

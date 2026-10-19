@@ -1,3 +1,5 @@
+//Try with multiboot cratex 
+
 pub const MAGIC: usize = 0x36d7_6289;
 
 #[derive(Copy, Clone)]

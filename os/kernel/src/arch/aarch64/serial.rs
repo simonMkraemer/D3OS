@@ -1,58 +1,56 @@
+// PL011 UART output on QEMU virt and the print!/println! macros built on it.
+//
+// Serial implements core::fmt::Write, so the macros support Rust formatting
+// ({}, {:#x}, {:#06b}, ...) without needing a heap. Later a `log` backend can
+// write through the same Serial type.
+
+use core::fmt;
+
 const PL011_UART0_BASE: usize = 0x0900_0000;
 const UARTDR: *mut u32 = PL011_UART0_BASE as *mut u32;
 const UARTFR: *mut u32 = (PL011_UART0_BASE + 0x18) as *mut u32;
 const UARTFR_TXFF: u32 = 1 << 5;
 
-pub fn write_byte(byte: u8) {
+pub struct Serial;
+
+impl fmt::Write for Serial {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            if byte == b'\n' {
+                write_byte(b'\r');
+            }
+            write_byte(byte);
+        }
+        Ok(())
+    }
+}
+
+/// Used by print!/println!. Not meant to be called directly.
+pub fn print_args(args: fmt::Arguments<'_>) {
+    use core::fmt::Write;
+    // Serial::write_str never fails, so write_fmt can only fail if a Display
+    // implementation reports an error. There is nowhere else to report it.
+    let _ = Serial.write_fmt(args);
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::serial::print_args(format_args!($($arg)*))
+    };
+}
+
+macro_rules! println {
+    () => {
+        print!("\n")
+    };
+    ($($arg:tt)*) => {
+        print!("{}\n", format_args!($($arg)*))
+    };
+}
+
+fn write_byte(byte: u8) {
     while unsafe { core::ptr::read_volatile(UARTFR) } & UARTFR_TXFF != 0 {
         core::hint::spin_loop();
     }
     unsafe { core::ptr::write_volatile(UARTDR, u32::from(byte)) };
-}
-
-pub fn write_str(s: &str) {
-    for byte in s.bytes() {
-        if byte == b'\n' {
-            write_byte(b'\r');
-        }
-        write_byte(byte);
-    }
-}
-
-pub fn write_hex_usize(value: usize) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let nybbles = core::mem::size_of::<usize>() * 2;
-
-    write_str("0x");
-    for shift in (0..nybbles).rev() {
-        let digit = (value >> (shift * 4)) & 0xf;
-        write_byte(HEX[digit] as u8);
-    }
-}
-
-pub fn write_labelled_hex(label: &str, value: usize) {
-    write_str(label);
-    write_hex_usize(value);
-    write_str("\n");
-}
-
-pub fn write_dec_usize(mut value: usize) {
-    let mut digits = [0u8; 20];
-    let mut len = 0;
-
-    if value == 0 {
-        write_byte(b'0');
-        return;
-    }
-
-    while value != 0 {
-        digits[len] = b'0' + (value % 10) as u8;
-        value /= 10;
-        len += 1;
-    }
-
-    while len != 0 {
-        len -= 1;
-        write_byte(digits[len]);
-    }
 }

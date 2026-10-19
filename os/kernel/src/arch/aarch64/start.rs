@@ -1,9 +1,12 @@
 #![no_std]
 #![no_main]
 
+// serial first: its print!/println! macros must be defined before the other modules.
+#[macro_use]
+mod serial;
+mod exception;
 mod framebuffer;
 mod multiboot2;
-mod serial;
 
 use crate::framebuffer::Framebuffer;
 use crate::multiboot2::{FramebufferInfo, HandoffInfo};
@@ -127,25 +130,37 @@ impl Aarch64BootInfo {
 #[unsafe(no_mangle)]
 pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) -> ! {
     if x0 != multiboot2::MAGIC {
-        serial::write_str("invalid AArch64 boot magic\n");
+        println!("invalid AArch64 boot magic");
         halt();
     }
 
+    // UEFI state at handoff: towboot leaves IRQs unmasked for the UEFI timer.
+    println!("DAIF at entry: {:#06b}", exception::read_daif());
+
     let Some(handoff) = multiboot2::parse_handoff(x1) else {
-        serial::write_str("invalid boot-information block\n");
+        println!("invalid boot-information block");
         halt();
     };
 
     if !handoff.has_required_uefi_handoff() {
-        serial::write_str("required UEFI handoff data is missing\n");
+        println!("required UEFI handoff data is missing");
         halt();
     }
 
     let efi_memory_map = exit_boot_services(&handoff);
     if !efi_memory_map.is_valid() {
-        serial::write_str("fresh EFI memory map is invalid\n");
+        println!("fresh EFI memory map is invalid");
         halt();
     }
+
+    //establish a defined CPU state now that UEFI no longer owns the machine
+    println!("DAIF after ExitBootServices: {:#06b}", exception::read_daif());
+    exception::mask_all();
+    println!("DAIF after masking: {:#06b}", exception::read_daif());
+    println!("CurrentEL: EL{}", exception::read_current_el());
+    println!("SPSel: {}", exception::read_spsel());
+    exception::install_vector_table();
+
     let boot_info = build_aarch64_boot_info(x1, handoff, efi_memory_map);
     report_boot_summary(&boot_info);
 
@@ -153,17 +168,12 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
         Some(framebuffer) => {
             print_framebuffer_status(framebuffer, &boot_info);
         }
-        None => serial::write_str("framebuffer tag missing\n"),
+        None => println!("framebuffer tag missing"),
     }
 
-    //start of exception level check
-    unsafe {
-        let mut value: usize;
-        core::arch::asm!("mrs {}, CurrentEL", out(reg) value);
-        serial::write_str("CurrentEl: ");
-        serial::write_hex_usize(value);
-        serial::write_str("\n");
-    }
+    // Synchronous exception test: BRK must reach handle_exception and return here.
+    exception::trigger_breakpoint();
+    println!("returned from BRK exception");
 
     loop {
         core::hint::spin_loop();
@@ -175,11 +185,11 @@ fn exit_boot_services(handoff: &HandoffInfo) -> EfiMemoryMapInfo {
     let image_handle = handoff.efi_image_handle.expect("validated UEFI image handle");
     match unsafe { exit_boot_services_raw(system_table, image_handle) } {
         Ok(memory_map) => {
-            serial::write_str("EFI Boot Services exited\n");
+            println!("EFI Boot Services exited");
             memory_map
         }
         Err(status) => {
-            serial::write_labelled_hex("ExitBootServices failed: ", status);
+            println!("ExitBootServices failed: {:#x}", status);
             halt();
         }
     }
@@ -421,25 +431,20 @@ fn align_down(value: usize, align: usize) -> usize {
 }
 
 fn report_boot_summary(boot_info: &Aarch64BootInfo) {
-    serial::write_str("AArch64 boot: ");
-    serial::write_dec_usize(boot_info.memory_summary.free_ram / PAGE_SIZE);
-    serial::write_str(" free frames, ");
-    serial::write_dec_usize(boot_info.retained_region_count());
-    serial::write_str(" retained regions, ");
-    serial::write_dec_usize(boot_info.efi_memory_map.descriptor_count());
-    serial::write_str(" EFI descriptors (v");
-    serial::write_dec_usize(boot_info.efi_memory_map.descriptor_version as usize);
-    serial::write_str(")");
-    if boot_info.acpi_rsdp.is_some() {
-        serial::write_str(", ACPI\n");
-    } else {
-        serial::write_str("\n");
-    }
+    let acpi = if boot_info.acpi_rsdp.is_some() { ", ACPI" } else { "" };
+    println!(
+        "AArch64 boot: {} free frames, {} retained regions, {} EFI descriptors (v{}){}",
+        boot_info.memory_summary.free_ram / PAGE_SIZE,
+        boot_info.retained_region_count(),
+        boot_info.efi_memory_map.descriptor_count(),
+        boot_info.efi_memory_map.descriptor_version,
+        acpi,
+    );
 }
 
 fn print_framebuffer_status(framebuffer: FramebufferInfo, boot_info: &Aarch64BootInfo) {
     let Some(console) = Framebuffer::new(framebuffer.address, framebuffer.pitch, framebuffer.width, framebuffer.height, framebuffer.bpp) else {
-        serial::write_str("framebuffer console unavailable\n");
+        println!("framebuffer console unavailable");
         return;
     };
 
@@ -463,8 +468,8 @@ fn print_framebuffer_status(framebuffer: FramebufferInfo, boot_info: &Aarch64Boo
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
-    serial::write_str("AArch64 kernel panic\n");
+fn panic(info: &PanicInfo<'_>) -> ! {
+    println!("AArch64 kernel panic: {}", info);
     loop {
         core::hint::spin_loop();
     }
