@@ -19,11 +19,10 @@ RUST_TARGET_PATH = "${CARGO_MAKE_WORKING_DIRECTORY}"
 SOURCE_DIRECTORY = "${CARGO_MAKE_WORKING_DIRECTORY}/src"
 LIBRARY_DIRECTORY = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/os/library"
 LINKER_FILE = "${CARGO_MAKE_WORKING_DIRECTORY}/link.ld"
-AARCH64_LINKER_FILE = "${CARGO_MAKE_WORKING_DIRECTORY}/link/aarch64.ld"
+AARCH64_CRATE_DIRECTORY = "${SOURCE_DIRECTORY}/arch/aarch64"
 RUST_OBJECT = "${BUILD_DIRECTORY}/lib${CARGO_MAKE_PROJECT_NAME}.a"
 ASM_OBJECT = "${BUILD_DIRECTORY}/boot.o"
 ASM_OBJECT_AP = "${BUILD_DIRECTORY}/boot_ap.o"
-AARCH64_ASM_OBJECT = "${BUILD_DIRECTORY}/boot_aarch64.o"
 KERNEL = "${BOOTLOADER_DIRECTORY}/${CARGO_MAKE_PROJECT_NAME}.elf"
 
 [tasks.default]
@@ -59,9 +58,9 @@ if [ "${KERNEL_ARCH:-}" = "x86_64" ]; then
   nasm -f elf64 -w+error=label-redef-late -o ${ASM_OBJECT_AP} ${SOURCE_DIRECTORY}/boot_ap.asm
   ${LINKER} -n -T ${LINKER_FILE} -o ${KERNEL} ${ASM_OBJECT} ${ASM_OBJECT_AP} ${RUST_OBJECT}
 elif [ "${KERNEL_ARCH:-}" = "aarch64" ]; then
-  mkdir -p ${BUILD_DIRECTORY}
-  clang --target=aarch64-none-elf -g -c -o ${AARCH64_ASM_OBJECT} ${SOURCE_DIRECTORY}/arch/aarch64/boot.S
-  rustc --target aarch64-unknown-none -C debuginfo=2 -C panic=abort -C linker=rust-lld -C link-arg=${AARCH64_ASM_OBJECT} -C link-arg=-T${AARCH64_LINKER_FILE} -C link-arg=-z -C link-arg=max-page-size=0x1000 -o ${KERNEL} ${SOURCE_DIRECTORY}/arch/aarch64/start.rs
+  # Own crate in src/arch/aarch64: target, target dir, linker script and boot.S are configured there.
+  (cd ${AARCH64_CRATE_DIRECTORY} && cargo build)
+  cp ${CARGO_MAKE_WORKING_DIRECTORY}/target/aarch64/aarch64-unknown-none/debug/kernel_aarch64 ${KERNEL}
 else
   echo "KERNEL_ARCH must be set to x86_64 or aarch64"
   exit 1
