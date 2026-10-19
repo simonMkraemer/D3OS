@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-// serial first: its print!/println! macros must be defined before the other modules.
+// serial first
 #[macro_use]
 mod serial;
 mod exception;
@@ -22,6 +22,10 @@ struct Region {
     start: usize,
     end: usize,
 }
+
+// I need to remove all the multiboot2 stuff because i want to use the crate later
+//maybe uefi crate too lol
+
 
 const PAGE_SIZE: usize = 0x1000;
 const MEBIBYTE: usize = 1024 * 1024;
@@ -134,7 +138,7 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
         halt();
     }
 
-    // UEFI state at handoff: towboot leaves IRQs unmasked for the UEFI timer.
+    // UEFI state at handoff: towboot leaves IRQs unmasked for the UEFI timer
     println!("DAIF at entry: {:#06b}", exception::read_daif());
 
     let Some(handoff) = multiboot2::parse_handoff(x1) else {
@@ -174,6 +178,9 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     // Synchronous exception test: BRK must reach handle_exception and return here.
     exception::trigger_breakpoint();
     println!("returned from BRK exception");
+
+    // small svc test
+    unsafe { core::arch::asm!("svc #0") };
 
     loop {
         core::hint::spin_loop();

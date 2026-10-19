@@ -56,11 +56,14 @@ pub fn read_spsel() -> usize {
 
 /// Mask Debug, SError, IRQ and FIQ. Synchronous exceptions (BRK, SVC, aborts) cannot be masked.
 pub fn mask_all() {
-    unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack, preserves_flags)) };
+    unsafe { core::arch::asm!("msr daifset, #0xf", options(nostack, preserves_flags)) };
 }
 
-/// Point VBAR_EL1 at the D3OS vector table. Must only be called after ExitBootServices,
-/// because UEFI still relies on its own vectors before that.
+/// Point VBAR_EL1 for D3OS vector table. Must only be called after ExitBootServices,
+/// because UEFI still relies on its own vectors.
+///
+/// I use ISB here to ensure that the new vector table is used immediately,
+/// because the CPU may have already prefetched instructions from the old table.
 pub fn install_vector_table() {
     let table = core::ptr::addr_of!(exception_vector_table) as usize;
     unsafe { core::arch::asm!("msr vbar_el1, {}", "isb", in(reg) table, options(nostack, preserves_flags)) };
@@ -73,6 +76,9 @@ pub fn trigger_breakpoint() {
     unsafe { core::arch::asm!("brk #0", clobber_abi("C")) };
 }
 
+
+/// Currently for debugging only :D
+/// Adresses are checkt in manual i added the links
 #[unsafe(no_mangle)]
 extern "C" fn handle_exception(frame: &mut TrapFrame, entry: usize) {
     let esr = read_esr();
@@ -84,6 +90,8 @@ extern "C" fn handle_exception(frame: &mut TrapFrame, entry: usize) {
     println!("  SPSR_EL1: {:#018x}", frame.spsr);
     println!("  FAR_EL1:  {:#018x}", read_far());
 
+
+    //TODO: remove this when we have a proper exception handler
     let is_synchronous = entry % 4 == 0;
     if is_synchronous && exception_class == EC_BRK {
         frame.elr += BRK_INSTRUCTION_SIZE;
