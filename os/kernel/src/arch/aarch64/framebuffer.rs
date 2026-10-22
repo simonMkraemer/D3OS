@@ -58,6 +58,8 @@ impl Framebuffer {
         }
     }
 
+    //TODO: Vielleicht rausnehmen not sure
+    #[allow(dead_code)]
     pub fn write_hex_usize(&self, x: usize, y: usize, value: usize) {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
         let nybbles = core::mem::size_of::<usize>() * 2;

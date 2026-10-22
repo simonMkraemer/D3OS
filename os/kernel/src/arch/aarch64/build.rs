@@ -1,6 +1,4 @@
-// Link the AArch64 kernel with the same linker script and page size the former
 // rustc-based build used. boot.S is included via global_asm! in start.rs.
-
 const LINKER_SCRIPT: &str = "../../../link/aarch64.ld";
 
 fn main() {

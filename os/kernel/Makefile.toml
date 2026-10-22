@@ -60,7 +60,7 @@ if [ "${KERNEL_ARCH:-}" = "x86_64" ]; then
 elif [ "${KERNEL_ARCH:-}" = "aarch64" ]; then
   # Own crate in src/arch/aarch64: target, target dir, linker script and boot.S are configured there.
   (cd ${AARCH64_CRATE_DIRECTORY} && cargo build)
-  cp ${CARGO_MAKE_WORKING_DIRECTORY}/target/aarch64/aarch64-unknown-none/debug/kernel_aarch64 ${KERNEL}
+  cp ${CARGO_MAKE_WORKING_DIRECTORY}/../../target/aarch64/aarch64-unknown-none/debug/kernel_aarch64 ${KERNEL}
 else
   echo "KERNEL_ARCH must be set to x86_64 or aarch64"
   exit 1
