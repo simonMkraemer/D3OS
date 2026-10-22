@@ -1,5 +1,4 @@
-# Always build this crate for bare-metal AArch64, also when rust-analyzer checks it.
-# target-dir is relative to os/kernel/src/arch/aarch64 and keeps build output out of src/.
+
 [build]
 target = "aarch64-unknown-none"
-target-dir = "../../../target/aarch64"
+target-dir = "../../../../../target/aarch64"

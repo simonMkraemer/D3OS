@@ -160,8 +160,9 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
         halt();
     }
 
-    //establish a defined CPU state now that UEFI no longer owns the machine
+    //defined CPU state now that UEFI no longer owns
     println!("DAIF after ExitBootServices: {:#06b}", exception::read_daif());
+    //TODO: austuschen wenn ich GIC hab... irgendwann mal..
     exception::mask_all();
     println!("DAIF after masking: {:#06b}", exception::read_daif());
     println!("CurrentEL: EL{}", exception::read_current_el());
@@ -183,7 +184,8 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     println!("returned from BRK exception");
 
     // small svc test
-    unsafe { core::arch::asm!("svc #0") };
+    // Fange ich gerade noch nicht ab !
+    // unsafe { core::arch::asm!("svc #0") };
 
     loop {
         core::hint::spin_loop();
@@ -467,15 +469,15 @@ fn print_framebuffer_status(framebuffer: FramebufferInfo, boot_info: &Aarch64Boo
     console.write_line(5, "RAM FREE MIB");
     console.write_dec_usize(8, console.line_y(6), boot_info.memory_summary.free_ram / MEBIBYTE);
 
-    console.write_line(7, "ALLOC REGIONS");
-    let shown = core::cmp::min(boot_info.usable_region_count, 3);
-    for (index, region) in boot_info.usable_regions.iter().take(shown).enumerate() {
-        // TODO: gerade noch nicht wichtig!
-        // let y = console.line_y(7 + index);
-        // console.write_hex_usize(8, y, region.start);
-        // console.write_text(8 + 19 * 6, y, "-");
-        // console.write_hex_usize(8 + 21 * 6, y, region.end);
-    }
+    // console.write_line(7, "ALLOC REGIONS");
+    // let shown = core::cmp::min(boot_info.usable_region_count, 3);
+    // for (index, region) in boot_info.usable_regions.iter().take(shown).enumerate() {
+    //     // TODO: gerade noch nicht wichtig!
+    //     // let y = console.line_y(7 + index);
+    //     // console.write_hex_usize(8, y, region.start);
+    //     // console.write_text(8 + 19 * 6, y, "-");
+    //     // console.write_hex_usize(8 + 21 * 6, y, region.end);
+    // }
 }
 
 #[panic_handler]
