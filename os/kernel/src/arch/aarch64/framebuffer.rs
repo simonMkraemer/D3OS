@@ -5,6 +5,16 @@ pub struct Framebuffer {
     height: usize,
 }
 
+//Used for bootloader ; Maybe I move this to start
+#[derive(Copy, Clone)]
+pub struct FramebufferInfo {
+    pub address: usize,
+    pub pitch: usize,
+    pub width: usize,
+    pub height: usize,
+    pub bpp: usize,
+}
+
 const GLYPH_WIDTH: usize = 5;
 const GLYPH_HEIGHT: usize = 7;
 const GLYPH_ADVANCE: usize = 6;

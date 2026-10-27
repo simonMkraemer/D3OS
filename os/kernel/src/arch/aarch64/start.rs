@@ -6,11 +6,12 @@
 mod serial;
 mod exception;
 mod framebuffer;
-mod multiboot2;
 
 use crate::framebuffer::Framebuffer;
-use crate::multiboot2::{FramebufferInfo, HandoffInfo};
+use crate::framebuffer::FramebufferInfo;
 use core::panic::PanicInfo;
+use core::ptr;
+use multiboot2::{BootInformation, BootInformationHeader, ModuleTag, TagHeader};
 
 // Entry point, multiboot2 header and exception vectors
 core::arch::global_asm!(include_str!("boot.S"), options(raw));
@@ -136,7 +137,7 @@ impl Aarch64BootInfo {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) -> ! {
-    if x0 != multiboot2::MAGIC {
+    if x0 != multiboot2::MAGIC as usize {
         println!("invalid AArch64 boot magic");
         halt();
     }
@@ -144,17 +145,15 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     // UEFI state at handoff: towboot leaves IRQs unmasked for the UEFI timer
     println!("DAIF at entry: {:#06b}", exception::read_daif());
 
-    let Some(handoff) = multiboot2::parse_handoff(x1) else {
-        println!("invalid boot-information block");
-        halt();
-    };
-
-    if !handoff.has_required_uefi_handoff() {
-        println!("required UEFI handoff data is missing");
-        halt();
+    // Same flow as x86 boot.rs: load once, then read each tag where it is needed
+    let multiboot = unsafe { BootInformation::load(x1 as *const BootInformationHeader) }.expect("Failed to get Multiboot2 information");
+    // Plan B: towboot always hands over with active boot services on AArch64
+    if multiboot.efi_bs_not_exited_tag().is_none() {
+        panic!("EFI boot services have already been exited");
     }
 
-    let efi_memory_map = exit_boot_services(&handoff);
+
+    let efi_memory_map = exit_boot_services(&multiboot);
     if !efi_memory_map.is_valid() {
         println!("fresh EFI memory map is invalid");
         halt();
@@ -169,7 +168,7 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     println!("SPSel: {}", exception::read_spsel());
     exception::install_vector_table();
 
-    let boot_info = build_aarch64_boot_info(x1, handoff, efi_memory_map);
+    let boot_info = build_aarch64_boot_info(&multiboot, efi_memory_map);
     report_boot_summary(&boot_info);
 
     match boot_info.framebuffer {
@@ -192,9 +191,9 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     }
 }
 
-fn exit_boot_services(handoff: &HandoffInfo) -> EfiMemoryMapInfo {
-    let system_table = handoff.efi_system_table.expect("validated UEFI system table");
-    let image_handle = handoff.efi_image_handle.expect("validated UEFI image handle");
+fn exit_boot_services(multiboot: &BootInformation<'_>) -> EfiMemoryMapInfo {
+    let system_table = multiboot.efi_sdt64_tag().expect("EFI system table not available!").sdt_address();
+    let image_handle = multiboot.efi_ih64_tag().expect("EFI image handle not available!").image_handle();
     match unsafe { exit_boot_services_raw(system_table, image_handle) } {
         Ok(memory_map) => {
             println!("EFI Boot Services exited");
@@ -263,20 +262,41 @@ fn read_u64(addr: usize) -> u64 {
     unsafe { core::ptr::read_volatile(addr as *const u64) }
 }
 
-fn build_aarch64_boot_info(bootinfo_address: usize, handoff: HandoffInfo, efi_memory_map: EfiMemoryMapInfo) -> Aarch64BootInfo {
+/// The module named "initrd", searched like in x86 boot.rs.
+fn find_initrd<'a>(multiboot: &'a BootInformation<'_>) -> Option<&'a ModuleTag> {
+    multiboot.module_tags().find(|module| module.cmdline().is_ok_and(|name| name == "initrd"))
+}
+
+/// The RSDP is stored inside the tag, directly after its header (like x86 boot.rs).
+fn acpi_rsdp_address(multiboot: &BootInformation<'_>) -> Option<usize> {
+    let v2 = multiboot.rsdp_v2_tag().map(|tag| ptr::from_ref(tag) as usize);
+    let v1 = multiboot.rsdp_v1_tag().map(|tag| ptr::from_ref(tag) as usize);
+    v2.or(v1).map(|tag_address| tag_address + size_of::<TagHeader>())
+}
+
+fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: EfiMemoryMapInfo) -> Aarch64BootInfo {
     let kernel_region = Region {
         start: core::ptr::addr_of!(___KERNEL_DATA_START__) as usize,
         end: core::ptr::addr_of!(___KERNEL_DATA_END__) as usize,
     };
     let bootinfo_region = Region {
-        start: bootinfo_address,
-        end: bootinfo_address.saturating_add(handoff.bootinfo_len),
+        start: multiboot.start_address(),
+        end: multiboot.end_address(),
     };
-    let initrd_region = handoff.initrd.map(|module| Region {
-        start: module.start,
-        end: module.end,
+    let initrd = find_initrd(multiboot).expect("Initrd not found!");
+    let initrd_region = Some(Region {
+        start: initrd.start_address() as usize,
+        end: initrd.end_address() as usize,
     });
-    let framebuffer_region = handoff.framebuffer.map(|framebuffer| Region {
+    // Kept optional: without a framebuffer the kernel still boots with UART output
+    let framebuffer = multiboot.framebuffer_tag().and_then(Result::ok).map(|tag| FramebufferInfo {
+        address: tag.address() as usize,
+        pitch: tag.pitch() as usize,
+        width: tag.width() as usize,
+        height: tag.height() as usize,
+        bpp: tag.bpp() as usize,
+    });
+    let framebuffer_region = framebuffer.map(|framebuffer| Region {
         start: framebuffer.address,
         end: framebuffer.address.saturating_add(framebuffer.pitch.saturating_mul(framebuffer.height)),
     });
@@ -332,8 +352,8 @@ fn build_aarch64_boot_info(bootinfo_address: usize, handoff: HandoffInfo, efi_me
         bootinfo_region,
         initrd_region,
         framebuffer_region,
-        framebuffer: handoff.framebuffer,
-        acpi_rsdp: handoff.acpi_rsdp,
+        framebuffer,
+        acpi_rsdp: acpi_rsdp_address(multiboot),
         usable_regions: usable,
         usable_region_count: usable_count,
         memory_summary: MemorySummary { total_ram, free_ram },
