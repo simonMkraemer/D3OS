@@ -19,6 +19,8 @@ bench = false
 
 [dependencies]
 multiboot2 = { version = "0.25", default-features = false }
+uefi = { version = "0.39", default-features = false }
+uefi-raw = "0.15"
 
 [profile.dev]
 panic = "abort"
