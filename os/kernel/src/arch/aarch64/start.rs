@@ -9,9 +9,14 @@ mod framebuffer;
 
 use crate::framebuffer::Framebuffer;
 use crate::framebuffer::FramebufferInfo;
+use core::ffi::c_void;
 use core::panic::PanicInfo;
 use core::ptr;
 use multiboot2::{BootInformation, BootInformationHeader, ModuleTag, TagHeader};
+use uefi::data_types::Handle;
+use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
+use uefi_raw::table::boot::MemoryType;
+use uefi_raw::table::system::SystemTable;
 
 // Entry point, multiboot2 header and exception vectors
 core::arch::global_asm!(include_str!("boot.S"), options(raw));
@@ -27,70 +32,9 @@ struct Region {
     end: usize,
 }
 
-// I need to remove all the multiboot2 stuff because i want to use the crate later
-//maybe uefi crate too lol
-
-
 const PAGE_SIZE: usize = 0x1000;
 const MEBIBYTE: usize = 1024 * 1024;
 const MAX_MEMORY_REGIONS: usize = 64;
-//If not allocated like this, we use AllocPool and this changes the MAP_KEY!
-const EFI_MEMORY_MAP_CAPACITY: usize = 64 * 1024;
-const EFI_MEMORY_DESCRIPTOR_MIN_SIZE: usize = 40;
-const EFI_CONVENTIONAL_MEMORY: u32 = 7;
-const EFI_INVALID_PARAMETER: usize = (1usize << (usize::BITS - 1)) | 2;
-const EXIT_BOOT_SERVICES_RETRIES: usize = 3;
-
-#[repr(C)]
-struct EfiTableHeader {
-    signature: u64,
-    revision: u32,
-    header_size: u32,
-    crc32: u32,
-    reserved: u32,
-}
-
-//https://uefi.org/specs/UEFI/2.10/04_EFI_System_Table.html
-#[repr(C)]
-struct EfiSystemTable {
-    header: EfiTableHeader,
-    firmware_vendor: *const u16,
-    firmware_revision: u32,
-    _padding: u32,
-    console_in_handle: usize,
-    con_in: usize,
-    console_out_handle: usize,
-    con_out: usize,
-    standard_error_handle: usize,
-    std_err: usize,
-    runtime_services: usize,
-    boot_services: *const EfiBootServices,
-}
-
-#[repr(C)]
-struct EfiBootServices {
-    header: EfiTableHeader,
-    raise_tpl: usize,
-    restore_tpl: usize,
-    allocate_pages: usize,
-    free_pages: usize,
-    get_memory_map: unsafe extern "efiapi" fn(*mut usize, *mut u8, *mut usize, *mut usize, *mut u32) -> usize,
-    _before_exit_boot_services: [usize; 21],
-    exit_boot_services: unsafe extern "efiapi" fn(usize, usize) -> usize,
-}
-
-#[repr(align(8))]
-struct EfiMemoryMap([u8; EFI_MEMORY_MAP_CAPACITY]);
-
-static mut EFI_MEMORY_MAP: EfiMemoryMap = EfiMemoryMap([0; EFI_MEMORY_MAP_CAPACITY]);
-
-#[derive(Clone, Copy)]
-struct EfiMemoryMapInfo {
-    address: usize,
-    len: usize,
-    descriptor_size: usize,
-    descriptor_version: u32,
-}
 
 #[derive(Clone, Copy)]
 struct MemorySummary {
@@ -99,7 +43,7 @@ struct MemorySummary {
 }
 
 struct Aarch64BootInfo {
-    efi_memory_map: EfiMemoryMapInfo,
+    efi_memory_map: MemoryMapOwned,
     kernel_region: Region,
     bootinfo_region: Region,
     initrd_region: Option<Region>,
@@ -111,26 +55,9 @@ struct Aarch64BootInfo {
     memory_summary: MemorySummary,
 }
 
-impl EfiMemoryMapInfo {
-    fn is_valid(self) -> bool {
-        self.address != 0 && self.descriptor_size >= EFI_MEMORY_DESCRIPTOR_MIN_SIZE && self.len % self.descriptor_size == 0
-    }
-
-    fn descriptor_count(self) -> usize {
-        self.len / self.descriptor_size
-    }
-}
-
 impl Aarch64BootInfo {
     fn retained_region_count(&self) -> usize {
-        let mandatory = [
-            self.kernel_region,
-            self.bootinfo_region,
-            Region {
-                start: self.efi_memory_map.address,
-                end: self.efi_memory_map.address.saturating_add(self.efi_memory_map.len),
-            },
-        ];
+        let mandatory = [self.kernel_region, self.bootinfo_region, memory_map_region(&self.efi_memory_map)];
         mandatory.iter().filter(|region| region.end > region.start).count() + self.initrd_region.is_some() as usize + self.framebuffer_region.is_some() as usize
     }
 }
@@ -142,22 +69,18 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
         halt();
     }
 
-    // UEFI state at handoff: towboot leaves IRQs unmasked for the UEFI timer
+    // UEFI state at handoff that towboot leaves IRQs unmasked for the UEFI timer
     println!("DAIF at entry: {:#06b}", exception::read_daif());
 
-    // Same flow as x86 boot.rs: load once, then read each tag where it is needed
+    // load once, then read each tag where it is needed
     let multiboot = unsafe { BootInformation::load(x1 as *const BootInformationHeader) }.expect("Failed to get Multiboot2 information");
-    // Plan B: towboot always hands over with active boot services on AArch64
+    // towboot always hands over with active boot services on AArch64
     if multiboot.efi_bs_not_exited_tag().is_none() {
         panic!("EFI boot services have already been exited");
     }
 
 
     let efi_memory_map = exit_boot_services(&multiboot);
-    if !efi_memory_map.is_valid() {
-        println!("fresh EFI memory map is invalid");
-        halt();
-    }
 
     //defined CPU state now that UEFI no longer owns
     println!("DAIF after ExitBootServices: {:#06b}", exception::read_daif());
@@ -166,6 +89,10 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     println!("DAIF after masking: {:#06b}", exception::read_daif());
     println!("CurrentEL: EL{}", exception::read_current_el());
     println!("SPSel: {}", exception::read_spsel());
+
+    //für memory, brauche ich gleich
+    //exception::print_sctlr();
+
     exception::install_vector_table();
 
     let boot_info = build_aarch64_boot_info(&multiboot, efi_memory_map);
@@ -191,75 +118,35 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     }
 }
 
-fn exit_boot_services(multiboot: &BootInformation<'_>) -> EfiMemoryMapInfo {
-    let system_table = multiboot.efi_sdt64_tag().expect("EFI system table not available!").sdt_address();
-    let image_handle = multiboot.efi_ih64_tag().expect("EFI image handle not available!").image_handle();
-    match unsafe { exit_boot_services_raw(system_table, image_handle) } {
-        Ok(memory_map) => {
-            println!("EFI Boot Services exited");
-            memory_map
-        }
-        Err(status) => {
-            println!("ExitBootServices failed: {:#x}", status);
-            halt();
-        }
-    }
+/// copy of x86 boot.rs -> hand the pointers from Multiboot2 to the uefi crate, exit afterward
+fn exit_boot_services(multiboot: &BootInformation<'_>) -> MemoryMapOwned {
+    let image_tag = multiboot.efi_ih64_tag().expect("EFI image handle not available!");
+    let sdt_tag = multiboot.efi_sdt64_tag().expect("EFI system table not available!");
+
+    let memory_map = unsafe {
+        let image_handle = Handle::from_ptr(image_tag.image_handle() as *mut c_void).expect("Failed to create EFI image handle struct from pointer!");
+        uefi::table::set_system_table(sdt_tag.sdt_address() as *const SystemTable);
+        uefi::boot::set_image_handle(image_handle);
+        // Allocates the map buffer as LOADER_DATA, retries once and resets the machine if exiting fails
+        uefi::boot::exit_boot_services(None)
+    };
+    println!("EFI Boot Services exited");
+    memory_map
 }
 
-unsafe fn exit_boot_services_raw(system_table: usize, image_handle: usize) -> Result<EfiMemoryMapInfo, usize> {
-    let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
-    let boot_services = unsafe { system_table.boot_services.as_ref() }.ok_or(usize::MAX)?;
-    // Only a raw pointer is created
-    let memory_map = unsafe { core::ptr::addr_of_mut!(EFI_MEMORY_MAP.0) }.cast::<u8>();
-
-    for _ in 0..EXIT_BOOT_SERVICES_RETRIES {
-        let mut memory_map_size = EFI_MEMORY_MAP_CAPACITY;
-        let mut memory_map_key = 0usize;
-        let mut descriptor_size = 0usize;
-        let mut descriptor_version = 0u32;
-
-        let status = unsafe {
-            (boot_services.get_memory_map)(
-                &mut memory_map_size,
-                memory_map,
-                &mut memory_map_key,
-                &mut descriptor_size,
-                &mut descriptor_version,
-            )
-        };
-        if status != 0 {
-            return Err(status);
-        }
-
-        let status = unsafe { (boot_services.exit_boot_services)(image_handle, memory_map_key) };
-        if status == 0 {
-            return Ok(EfiMemoryMapInfo {
-                address: memory_map as usize,
-                len: memory_map_size,
-                descriptor_size,
-                descriptor_version,
-            });
-        }
-        if status != EFI_INVALID_PARAMETER {
-            return Err(status);
-        }
+/// The buffer the uefi crate allocated for the memory map; it must not be handed out as free memory.
+fn memory_map_region(memory_map: &MemoryMapOwned) -> Region {
+    let buffer = memory_map.buffer();
+    Region {
+        start: buffer.as_ptr() as usize,
+        end: buffer.as_ptr() as usize + buffer.len(),
     }
-
-    Err(EFI_INVALID_PARAMETER)
 }
 
 fn halt() -> ! {
     loop {
         core::hint::spin_loop();
     }
-}
-
-fn read_u32(addr: usize) -> u32 {
-    unsafe { core::ptr::read_volatile(addr as *const u32) }
-}
-
-fn read_u64(addr: usize) -> u64 {
-    unsafe { core::ptr::read_volatile(addr as *const u64) }
 }
 
 /// The module named "initrd", searched like in x86 boot.rs.
@@ -274,7 +161,7 @@ fn acpi_rsdp_address(multiboot: &BootInformation<'_>) -> Option<usize> {
     v2.or(v1).map(|tag_address| tag_address + size_of::<TagHeader>())
 }
 
-fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: EfiMemoryMapInfo) -> Aarch64BootInfo {
+fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: MemoryMapOwned) -> Aarch64BootInfo {
     let kernel_region = Region {
         start: core::ptr::addr_of!(___KERNEL_DATA_START__) as usize,
         end: core::ptr::addr_of!(___KERNEL_DATA_END__) as usize,
@@ -288,7 +175,7 @@ fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: EfiM
         start: initrd.start_address() as usize,
         end: initrd.end_address() as usize,
     });
-    // Kept optional: without a framebuffer the kernel still boots with UART output
+    // TODO: optional for now so kernel can still boot with UART only... fix later
     let framebuffer = multiboot.framebuffer_tag().and_then(Result::ok).map(|tag| FramebufferInfo {
         address: tag.address() as usize,
         pitch: tag.pitch() as usize,
@@ -305,10 +192,7 @@ fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: EfiM
     for region in [
         Some(kernel_region),
         Some(bootinfo_region),
-        Some(Region {
-            start: efi_memory_map.address,
-            end: efi_memory_map.address.saturating_add(efi_memory_map.len),
-        }),
+        Some(memory_map_region(&efi_memory_map)),
         initrd_region,
         framebuffer_region,
     ]
@@ -320,7 +204,7 @@ fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: EfiM
     }
 
     let mut usable = [Region { start: 0, end: 0 }; MAX_MEMORY_REGIONS];
-    let mut usable_count = collect_usable_efi_regions(efi_memory_map, &mut usable);
+    let mut usable_count = collect_usable_efi_regions(&efi_memory_map, &mut usable);
     for reserved_region in reserved.iter().copied().take(reserved_count) {
         usable_count = subtract_reserved_regions(&mut usable, usable_count, reserved_region);
     }
@@ -331,20 +215,12 @@ fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: EfiM
         .take(usable_count)
         .fold(0usize, |total, region| total.saturating_add(region.end - region.start));
 
-    let mut total_ram = 0usize;
-    let descriptor_count = efi_memory_map.len / efi_memory_map.descriptor_size;
-    for index in 0..descriptor_count {
-        let descriptor = efi_memory_map.address + index * efi_memory_map.descriptor_size;
-        let memory_type = read_u32(descriptor);
-        if !(1..=10).contains(&memory_type) {
-            continue;
-        }
-
-        let page_count = read_u64(descriptor + 24) as usize;
-        if let Some(bytes) = page_count.checked_mul(PAGE_SIZE) {
-            total_ram = total_ram.saturating_add(bytes);
-        }
-    }
+    // RAM = every type from LOADER_CODE (1) to ACPI_NON_VOLATILE (10); excludes RESERVED and MMIO
+    let ram_types = MemoryType::LOADER_CODE.0..=MemoryType::ACPI_NON_VOLATILE.0;
+    let total_ram = efi_memory_map
+        .entries()
+        .filter(|descriptor| ram_types.contains(&descriptor.ty.0))
+        .fold(0usize, |total, descriptor| total.saturating_add((descriptor.page_count as usize).saturating_mul(PAGE_SIZE)));
 
     Aarch64BootInfo {
         efi_memory_map,
@@ -360,27 +236,15 @@ fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: EfiM
     }
 }
 
-fn collect_usable_efi_regions(efi_memory_map: EfiMemoryMapInfo, out: &mut [Region; MAX_MEMORY_REGIONS]) -> usize {
-    if !efi_memory_map.is_valid() {
-        return 0;
-    }
-
+fn collect_usable_efi_regions(efi_memory_map: &MemoryMapOwned, out: &mut [Region; MAX_MEMORY_REGIONS]) -> usize {
     let mut count = 0usize;
-    let descriptor_count = efi_memory_map.len / efi_memory_map.descriptor_size;
-    for index in 0..descriptor_count {
+    for descriptor in efi_memory_map.entries().filter(|descriptor| descriptor.ty == MemoryType::CONVENTIONAL) {
         if count == out.len() {
             break;
         }
 
-        let descriptor = efi_memory_map.address + index * efi_memory_map.descriptor_size;
-        let memory_type = read_u32(descriptor);
-        if memory_type != EFI_CONVENTIONAL_MEMORY {
-            continue;
-        }
-
-        let start = read_u64(descriptor + 8) as usize;
-        let page_count = read_u64(descriptor + 24) as usize;
-        let Some(length) = page_count.checked_mul(PAGE_SIZE) else {
+        let start = descriptor.phys_start as usize;
+        let Some(length) = (descriptor.page_count as usize).checked_mul(PAGE_SIZE) else {
             continue;
         };
 
@@ -469,8 +333,8 @@ fn report_boot_summary(boot_info: &Aarch64BootInfo) {
         "AArch64 boot: {} free frames, {} retained regions, {} EFI descriptors (v{}){}",
         boot_info.memory_summary.free_ram / PAGE_SIZE,
         boot_info.retained_region_count(),
-        boot_info.efi_memory_map.descriptor_count(),
-        boot_info.efi_memory_map.descriptor_version,
+        boot_info.efi_memory_map.len(),
+        boot_info.efi_memory_map.meta().desc_version,
         acpi,
     );
 }
@@ -498,6 +362,22 @@ fn print_framebuffer_status(framebuffer: FramebufferInfo, boot_info: &Aarch64Boo
     //     // console.write_text(8 + 19 * 6, y, "-");
     //     // console.write_hex_usize(8 + 21 * 6, y, region.end);
     // }
+
+    //uefi usable regioons
+    const FIRST_LINE: usize = 8;
+    console.write_line(FIRST_LINE, "NR  TYP  START               SEITEN");
+
+    for (index, descriptor) in boot_info.efi_memory_map.entries().enumerate() {
+        let y = console.line_y(FIRST_LINE + 1 + index);
+        console.write_dec_usize(8, y, index);
+        let typ = descriptor.ty.0;
+        console.write_dec_usize(8 + 4 * 6, y, typ as usize);
+        let start = descriptor.phys_start as usize;
+        console.write_hex_usize(8 + 9 * 6, y, start);
+        let pages = descriptor.page_count as usize;
+        console.write_dec_usize(8 + 29 * 6, y, pages);
+
+    }
 }
 
 #[panic_handler]
