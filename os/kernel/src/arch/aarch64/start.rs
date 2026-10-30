@@ -113,6 +113,8 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     // Fange ich gerade noch nicht ab !
     // unsafe { core::arch::asm!("svc #0") };
 
+    println!("SCTLR_EL1: {:#018x}", exception::read_sctlr());
+
     loop {
         core::hint::spin_loop();
     }
