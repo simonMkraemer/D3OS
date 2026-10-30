@@ -39,6 +39,15 @@ pub fn read_current_el() -> usize {
     (value >> 2) & 0b11
 }
 
+/// Read SCTLR_EL1 (System Control Register) to check MMU and caches
+/// https://support.arm.com/documentation/ddi0601/2025-03/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-
+/// We caree about M (bit 0) for MMU, C (bit 2) for data cache, and I (bit 12) for instruction cache
+pub fn read_sctlr() -> usize {
+    let value: usize;
+    unsafe { core::arch::asm!("mrs {}, SCTLR_EL1", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    value
+}
+
 /// Interrupt masks D, A, I, F (DAIF bits [9:6]) as a 4-bit value: bit 3 = D ... bit 0 = F.
 // https://support.arm.com/documentation/ddi0601/2025-03/AArch64-Registers/DAIF--Interrupt-Mask-Bits
 pub fn read_daif() -> usize {
