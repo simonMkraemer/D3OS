@@ -42,6 +42,8 @@ struct MemorySummary {
     free_ram: usize,
 }
 
+// TODO: remove warn later, annoys me right now
+#[warn(unused)]
 struct Aarch64BootInfo {
     efi_memory_map: MemoryMapOwned,
     kernel_region: Region,
@@ -84,16 +86,7 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
 
     //defined CPU state now that UEFI no longer owns
     println!("DAIF after ExitBootServices: {:#06b}", exception::read_daif());
-    //TODO: austuschen wenn ich GIC hab... irgendwann mal..
-    exception::mask_all();
-    println!("DAIF after masking: {:#06b}", exception::read_daif());
-    println!("CurrentEL: EL{}", exception::read_current_el());
-    println!("SPSel: {}", exception::read_spsel());
-
-    //für memory, brauche ich gleich
-    //exception::print_sctlr();
-
-    exception::install_vector_table();
+    exception::init();
 
     let boot_info = build_aarch64_boot_info(&multiboot, efi_memory_map);
     report_boot_summary(&boot_info);
@@ -110,10 +103,13 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     println!("returned from BRK exception");
 
     // small svc test
-    // Fange ich gerade noch nicht ab !
     // unsafe { core::arch::asm!("svc #0") };
 
     println!("SCTLR_EL1: {:#018x}", exception::read_sctlr());
+    //lands in panic!
+    //exception::trigger_data_abort();
+    //println!("returned from data abort exception");
+
 
     loop {
         core::hint::spin_loop();
@@ -354,16 +350,6 @@ fn print_framebuffer_status(framebuffer: FramebufferInfo, boot_info: &Aarch64Boo
     console.write_dec_usize(8, console.line_y(4), boot_info.memory_summary.total_ram / MEBIBYTE);
     console.write_line(5, "RAM FREE MIB");
     console.write_dec_usize(8, console.line_y(6), boot_info.memory_summary.free_ram / MEBIBYTE);
-
-    // console.write_line(7, "ALLOC REGIONS");
-    // let shown = core::cmp::min(boot_info.usable_region_count, 3);
-    // for (index, region) in boot_info.usable_regions.iter().take(shown).enumerate() {
-    //     // TODO: gerade noch nicht wichtig!
-    //     // let y = console.line_y(7 + index);
-    //     // console.write_hex_usize(8, y, region.start);
-    //     // console.write_text(8 + 19 * 6, y, "-");
-    //     // console.write_hex_usize(8 + 21 * 6, y, region.end);
-    // }
 
     //uefi usable regioons
     const FIRST_LINE: usize = 8;
