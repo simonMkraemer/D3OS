@@ -6,6 +6,7 @@
 mod serial;
 mod exception;
 mod framebuffer;
+mod frames;
 
 use crate::framebuffer::Framebuffer;
 use crate::framebuffer::FramebufferInfo;
@@ -81,7 +82,7 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
         panic!("EFI boot services have already been exited");
     }
 
-
+    //D3OS is chef
     let efi_memory_map = exit_boot_services(&multiboot);
 
     //defined CPU state now that UEFI no longer owns
@@ -90,6 +91,9 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
 
     let boot_info = build_aarch64_boot_info(&multiboot, efi_memory_map);
     report_boot_summary(&boot_info);
+
+    let mut frame_allocator = frames::BumpFrameAllocator::new(boot_info.usable_regions, boot_info.usable_region_count);
+    test_frame_allocator(&mut frame_allocator);
 
     match boot_info.framebuffer {
         Some(framebuffer) => {
@@ -238,6 +242,7 @@ fn collect_usable_efi_regions(efi_memory_map: &MemoryMapOwned, out: &mut [Region
     let mut count = 0usize;
     for descriptor in efi_memory_map.entries().filter(|descriptor| descriptor.ty == MemoryType::CONVENTIONAL) {
         if count == out.len() {
+            println!("warning: more than {} usable memory regions, ignoring the rest", MAX_MEMORY_REGIONS);
             break;
         }
 
@@ -335,6 +340,25 @@ fn report_boot_summary(boot_info: &Aarch64BootInfo) {
         boot_info.efi_memory_map.meta().desc_version,
         acpi,
     );
+}
+
+/// Allocate a few frames, check they are aligned and back to back, and that the memory is usable.
+fn test_frame_allocator(frame_allocator: &mut frames::BumpFrameAllocator) {
+    let first = frame_allocator.alloc(1);
+    let second = frame_allocator.alloc(2);
+    let third = frame_allocator.alloc(1);
+    println!("frames: {:#x}, {:#x} (2 frames), {:#x}", first, second, third);
+
+    assert!(first % PAGE_SIZE == 0 && second % PAGE_SIZE == 0 && third % PAGE_SIZE == 0, "frame not aligned");
+    assert!(second == first + PAGE_SIZE && third == second + 2 * PAGE_SIZE, "frames not back to back");
+
+    let pattern: u64 = 0xd3_05_ca_fe;
+    let frame = third as *mut u64;
+    unsafe {
+        ptr::write_volatile(frame, pattern);
+        assert!(ptr::read_volatile(frame) == pattern, "frame {:#x} not writable", third);
+    }
+    println!("frame allocator ok");
 }
 
 fn print_framebuffer_status(framebuffer: FramebufferInfo, boot_info: &Aarch64BootInfo) {
