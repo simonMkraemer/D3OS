@@ -7,6 +7,7 @@ mod serial;
 mod exception;
 mod framebuffer;
 mod frames;
+mod paging;
 
 use crate::framebuffer::Framebuffer;
 use crate::framebuffer::FramebufferInfo;
@@ -110,6 +111,19 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     // unsafe { core::arch::asm!("svc #0") };
 
     println!("SCTLR_EL1: {:#018x}", exception::read_sctlr());
+    let tcr = paging::read_tcr();
+    println!(
+        "TCR_EL1: {:#018x} (T0SZ {}, EPD0 {}, TG0 {:#04b}, T1SZ {}, EPD1 {}, IPS {:#05b})",
+        tcr,
+        tcr & 0b111111,
+        (tcr >> 7) & 0b1,
+        (tcr >> 14) & 0b11,
+        (tcr >> 16) & 0b111111,
+        (tcr >> 23) & 0b1,
+        (tcr >> 32) & 0b111
+    );
+    demo_translation(&boot_info, frame_allocator.alloc(1));
+
     //lands in panic!
     //exception::trigger_data_abort();
     //println!("returned from data abort exception");
@@ -238,6 +252,9 @@ fn build_aarch64_boot_info(multiboot: &BootInformation<'_>, efi_memory_map: Memo
     }
 }
 
+
+/// Currently i only use type CONVENTIONAL
+//TODO: add more types later when its safe to use them
 fn collect_usable_efi_regions(efi_memory_map: &MemoryMapOwned, out: &mut [Region; MAX_MEMORY_REGIONS]) -> usize {
     let mut count = 0usize;
     for descriptor in efi_memory_map.entries().filter(|descriptor| descriptor.ty == MemoryType::CONVENTIONAL) {
@@ -340,6 +357,35 @@ fn report_boot_summary(boot_info: &Aarch64BootInfo) {
         boot_info.efi_memory_map.meta().desc_version,
         acpi,
     );
+}
+
+/// Show where the firmware's translation tables live and how the MMU translates a few addresses
+/// with them: software walk step by step, cross-checked against the MMU itself.
+fn demo_translation(boot_info: &Aarch64BootInfo, allocated_frame: usize) {
+    let ttbr0 = paging::read_ttbr0();
+    let table_memory_type = boot_info
+        .efi_memory_map
+        .entries()
+        .find(|descriptor| {
+            let start = descriptor.phys_start as usize;
+            (start..start + descriptor.page_count as usize * PAGE_SIZE).contains(&ttbr0)
+        })
+        .map(|descriptor| descriptor.ty);
+    println!("TTBR0_EL1: {:#x}, in EFI memory type {:?}", ttbr0, table_memory_type);
+
+    let samples = [
+        ("UART", serial::PL011_UART0_BASE),
+        ("kernel code", start_aarch64 as *const () as usize),
+        ("allocated frame", allocated_frame + 0x123),
+        ("outside", 0x0000_ffff_0000_0000),
+    ];
+    for (name, virtual_address) in samples {
+        println!("--------DEMO--------");
+        println!("translate {} {:#x}:", name, virtual_address);
+        paging::print_walk(virtual_address);
+        let walked = paging::translate(virtual_address);
+        println!("  software walk {:x?}, MMU {:x?}", walked, paging::translate_with_mmu(virtual_address));
+    }
 }
 
 /// Allocate a few frames, check they are aligned and back to back, and that the memory is usable.

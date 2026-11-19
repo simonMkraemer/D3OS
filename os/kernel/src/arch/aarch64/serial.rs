@@ -6,7 +6,8 @@
 
 use core::fmt;
 
-const PL011_UART0_BASE: usize = 0x0900_0000;
+//TODO: remove after i dont need the demo
+pub(crate) const PL011_UART0_BASE: usize = 0x0900_0000;
 const UARTDR: *mut u32 = PL011_UART0_BASE as *mut u32;
 const UARTFR: *mut u32 = (PL011_UART0_BASE + 0x18) as *mut u32;
 const UARTFR_TXFF: u32 = 1 << 5;
