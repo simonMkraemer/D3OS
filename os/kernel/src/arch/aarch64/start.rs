@@ -110,6 +110,13 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
     // small svc test
     // unsafe { core::arch::asm!("svc #0") };
 
+    //lands in panic!
+    //exception::trigger_data_abort();
+    //println!("returned from data abort exception");
+
+
+    //paging
+
     println!("SCTLR_EL1: {:#018x}", exception::read_sctlr());
     let tcr = paging::read_tcr();
     println!(
@@ -122,11 +129,21 @@ pub extern "C" fn start_aarch64(x0: usize, x1: usize, _x2: usize, _x3: usize) ->
         (tcr >> 23) & 0b1,
         (tcr >> 32) & 0b111
     );
+
+
     demo_translation(&boot_info, frame_allocator.alloc(1));
 
-    //lands in panic!
-    //exception::trigger_data_abort();
-    //println!("returned from data abort exception");
+    //test the
+    println!(" ");
+    println!("test demo block");
+    let entry = paging::PageTableEntry::block(0x4000_0000, 1);
+    println!("block entry {:#018x}, AttrIndx {}, AF {}", entry.raw(), entry.attr_index(), entry.access_flag());
+
+    let kernel_table = paging::create_kernel_table(frame_allocator.alloc(1));
+    let table = unsafe { paging::PageTable::at(kernel_table) };
+    for index in 0..4 {
+        println!("own L1[{}] = {:#018x}", index, table.entry(index).raw());
+    }
 
 
     loop {
@@ -150,7 +167,7 @@ fn exit_boot_services(multiboot: &BootInformation<'_>) -> MemoryMapOwned {
     memory_map
 }
 
-/// The buffer the uefi crate allocated for the memory map; it must not be handed out as free memory.
+/// The buffer the uefi crate allocated for the memory map; it must not be handed out as free memory
 fn memory_map_region(memory_map: &MemoryMapOwned) -> Region {
     let buffer = memory_map.buffer();
     Region {
@@ -165,12 +182,12 @@ fn halt() -> ! {
     }
 }
 
-/// The module named "initrd", searched like in x86 boot.rs.
+/// The module named "initrd", searched like in x86 boot.rs
 fn find_initrd<'a>(multiboot: &'a BootInformation<'_>) -> Option<&'a ModuleTag> {
     multiboot.module_tags().find(|module| module.cmdline().is_ok_and(|name| name == "initrd"))
 }
 
-/// The RSDP is stored inside the tag, directly after its header (like x86 boot.rs).
+/// The RSDP is stored inside the tag, directly after its header (like x86 boot.rs)
 fn acpi_rsdp_address(multiboot: &BootInformation<'_>) -> Option<usize> {
     let v2 = multiboot.rsdp_v2_tag().map(|tag| ptr::from_ref(tag) as usize);
     let v1 = multiboot.rsdp_v1_tag().map(|tag| ptr::from_ref(tag) as usize);

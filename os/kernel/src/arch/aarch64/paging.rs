@@ -12,6 +12,24 @@ const BITS_PER_LEVEL: usize = 9;
 const LAST_LEVEL: usize = 3;
 const ATTR_INDEX_SHIFT: usize = 2;
 const ACCESS_FLAG: usize = 1 << 10;
+// SH (bits 9:8): which cores keep this memory coherent. 0b11 = Inner Shareable (all cores).
+// Only matters for Normal memory, Device memory ignores it.
+const SHAREABILITY_SHIFT: usize = 8;
+const INNER_SHAREABLE: usize = 0b11;
+// Execute never: 1 = EL1 (privileged) / EL0 (unprivileged) must not execute from here
+const PRIVILEGED_EXECUTE_NEVER: usize = 1 << 53;
+const UNPRIVILEGED_EXECUTE_NEVER: usize = 1 << 54;
+
+// Slots in MAIR_EL1 that AttrIndx points to (MAIR itself is set in part B)
+const MAIR_DEVICE_INDEX: usize = 0;
+const MAIR_NORMAL_INDEX: usize = 1;
+
+// QEMU virt layout: devices below 1 GiB, RAM from 1 GiB
+// TODO: Add for raspi 4 later lol
+const DEVICE_REGION: usize = 0x0000_0000;
+const RAM_REGION: usize = 0x4000_0000;
+// Our own table starts at level 1 (T0SZ 32), so every entry is a 1 GiB block
+const KERNEL_TABLE_LEVEL: usize = 1;
 
 /// One translation table: 512 entries of 8 bytes, exactly one 4 KiB frame
 #[repr(C, align(4096))]
@@ -26,9 +44,37 @@ impl PageTable {
         unsafe { &*(address as *const PageTable) }
     }
 
+    /// Like `at`, but writable. Same promise from the caller, plus: nobody else uses this table right now.
+    pub unsafe fn at_mut(address: usize) -> &'static mut PageTable {
+        unsafe { &mut *(address as *mut PageTable) }
+    }
+
     pub fn entry(&self, index: usize) -> PageTableEntry {
         self.entries[index]
     }
+
+    pub fn set_entry(&mut self, index: usize, entry: PageTableEntry) {
+        self.entries[index] = entry;
+    }
+}
+
+/// Build our own level-1 table in `frame` (a fresh frame from the frame allocator):
+/// entry 0 = devices, entry 1 = RAM, both identity mapped 1 GiB blocks, everything else invalid
+/// Returns the table address, later written to TTBR0_EL1 so the mmu sees it
+pub fn create_kernel_table(frame: usize) -> usize {
+    let table = unsafe { PageTable::at_mut(frame) };
+
+    for index in 0..ENTRIES_PER_TABLE {
+        table.set_entry(index, PageTableEntry(0));
+    }
+
+    let device_index = table_index(DEVICE_REGION, KERNEL_TABLE_LEVEL);
+    let ram_index = table_index(RAM_REGION, KERNEL_TABLE_LEVEL);
+
+    table.set_entry(device_index, PageTableEntry::block(DEVICE_REGION, MAIR_DEVICE_INDEX));
+    table.set_entry(ram_index, PageTableEntry::block(RAM_REGION, MAIR_NORMAL_INDEX));
+
+    frame
 }
 
 /// what an entry means depends on its level: bit 1 is "table" on levels 0-2 but "page" on level 3
@@ -45,7 +91,16 @@ pub enum EntryKind {
 #[repr(transparent)]
 pub struct PageTableEntry(usize);
 
+
 impl PageTableEntry {
+    /// Block entry for level 1 (1 GiB) or level 2 (2 MiB): maps `address` directly, no further table.
+    /// The counterpart of `kind`: there we read bits, here we set them.
+    /// AP (bits 7:6) stays 0 = EL1 read/write, EL0 no access. PXN/UXN stay 0 = executable.
+    /// https://support.arm.com/documentation/ddi0406/b/System-Level-Architecture/Virtual-Memory-System-Architecture--VMSA-/Translation-tables/Translation-table-entry-formats?lang=en
+    pub fn block(address: usize, attr_index: usize) -> PageTableEntry {
+        PageTableEntry((address & OUTPUT_ADDRESS_MASK) | DESCRIPTOR_VALID | (attr_index << ATTR_INDEX_SHIFT) | ACCESS_FLAG | (INNER_SHAREABLE << SHAREABILITY_SHIFT))
+    }
+
     pub fn raw(&self) -> usize {
         self.0
     }
@@ -74,6 +129,16 @@ impl PageTableEntry {
     /// Access flag (bit 10): must be 1, otherwise the first access raises an Access Flag Fault
     pub fn access_flag(&self) -> bool {
         self.0 & ACCESS_FLAG != 0
+    }
+
+    /// PXN (bit 53): the kernel (EL1) must not execute from here
+    pub fn privileged_execute_never(&self) -> bool {
+        self.0 & PRIVILEGED_EXECUTE_NEVER != 0
+    }
+
+    /// UXN (bit 54): a process (EL0) must not execute from here
+    pub fn unprivileged_execute_never(&self) -> bool {
+        self.0 & UNPRIVILEGED_EXECUTE_NEVER != 0
     }
 }
 
@@ -197,13 +262,15 @@ pub fn print_walk(virtual_address: usize) {
             EntryKind::Page(address) => ("page", address),
         };
         println!(
-            "  -> {} KiB {} at {:#x} + offset {:#x} (AttrIndx {}, AF {})",
+            "  -> {} KiB {} at {:#x} + offset {:#x} (AttrIndx {}, AF {}, PXN {}, UXN {})",
             (1usize << level_shift(level)) / 1024,
             kind,
             address,
             offset_in_level(virtual_address, level),
             entry.attr_index(),
-            entry.access_flag()
+            entry.access_flag(),
+            entry.privileged_execute_never(),
+            entry.unprivileged_execute_never()
         );
         return;
     }
